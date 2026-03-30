@@ -50,23 +50,35 @@ def log_tokens(service: str, input_tokens: int = 0, output_tokens: int = 0, minu
         TOKEN_STATS["claude"]["input_tokens"] += input_tokens
         TOKEN_STATS["claude"]["output_tokens"] += output_tokens
         TOKEN_STATS["claude"]["requests"] += 1
-        log.info(f"[TOKENS] Claude SDK: {input_tokens} input, {output_tokens} output")
+        # Calculate cost for this specific call
+        call_cost = (input_tokens * 0.015 + output_tokens * 0.075) / 1000
+        log.info(f"[TOKENS] Claude SDK: {input_tokens} input, {output_tokens} output → ${call_cost:.4f} THIS CALL")
     elif service == "openai_chat":
         TOKEN_STATS["openai_chat"]["input_tokens"] += input_tokens
         TOKEN_STATS["openai_chat"]["output_tokens"] += output_tokens
         TOKEN_STATS["openai_chat"]["requests"] += 1
-        log.info(f"[TOKENS] OpenAI Chat: {input_tokens} input, {output_tokens} output")
+        # Calculate cost for this specific call
+        call_cost = (input_tokens * 0.15 + output_tokens * 0.60) / 1000000
+        log.info(f"[TOKENS] OpenAI GPT-4o-mini: {input_tokens} input, {output_tokens} output → ${call_cost:.4f} THIS CALL")
     elif service == "whisper":
         TOKEN_STATS["whisper"]["minutes"] += minutes
         TOKEN_STATS["whisper"]["requests"] += 1
-        log.info(f"[TOKENS] Whisper: {minutes:.2f} minutes")
+        # Calculate cost for this specific call
+        call_cost = minutes * 0.006
+        log.info(f"[TOKENS] Whisper: {minutes:.2f} minutes → ${call_cost:.4f} THIS CALL")
     
     # Log cumulative stats
     total_input = TOKEN_STATS["claude"]["input_tokens"] + TOKEN_STATS["openai_chat"]["input_tokens"]
     total_output = TOKEN_STATS["claude"]["output_tokens"] + TOKEN_STATS["openai_chat"]["output_tokens"]
     total_requests = TOKEN_STATS["claude"]["requests"] + TOKEN_STATS["openai_chat"]["requests"] + TOKEN_STATS["whisper"]["requests"]
     
-    log.info(f"[TOKENS] TOTAL: {total_input} input, {total_output} output, {total_requests} requests")
+    # Calculate total cost so far
+    claude_cost = (TOKEN_STATS["claude"]["input_tokens"] * 0.015 + TOKEN_STATS["claude"]["output_tokens"] * 0.075) / 1000
+    openai_cost = (TOKEN_STATS["openai_chat"]["input_tokens"] * 0.15 + TOKEN_STATS["openai_chat"]["output_tokens"] * 0.60) / 1000000
+    whisper_cost = TOKEN_STATS["whisper"]["minutes"] * 0.006
+    total_cost = claude_cost + openai_cost + whisper_cost
+    
+    log.info(f"[TOKENS] RUNNING TOTAL: {total_input} input, {total_output} output, {total_requests} requests → ${total_cost:.4f} TOTAL")
 
 def print_token_summary():
     """Print comprehensive token usage summary."""
