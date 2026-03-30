@@ -520,22 +520,27 @@ class CommandRouter:
                 convo_name = text_lower[len(prefix):].strip()
                 return self.open_cowork_conversation(convo_name)
 
-        # ── Prompt Cowork ──
+        # ── Prompt Cowork (only when explicitly specified) ──
         for prefix in ["prompt cowork ", "tell cowork ", "prompt claude cowork ",
                        "ask cowork ", "cowork prompt ", "prompt cowork to ",
-                       "tell cowork to ", "ask cowork to "]:
+                       "tell cowork to ", "ask cowork to ",
+                       "send to cowork ", "in cowork "]:
             if text_lower.startswith(prefix):
-                prompt_text = text[len(prefix):].strip()  # Keep original casing
+                prompt_text = text[len(prefix):].strip()
                 return self.prompt_cowork(prompt_text)
 
-        # ── Prompt Claude Code ──
+        # ── Prompt Claude Code (default target — also catches generic "prompt") ──
         for prefix in ["prompt claude code ", "tell claude code ", "ask claude code ",
                        "claude code ", "prompt claude code to ",
                        "tell claude code to ", "ask claude code to ",
-                       "run in terminal ", "terminal command "]:
+                       "run in terminal ", "terminal command ",
+                       "prompt ", "tell claude ", "ask claude ",
+                       "tell claude to ", "ask claude to ",
+                       "run ", "execute "]:
             if text_lower.startswith(prefix):
                 prompt_text = text[len(prefix):].strip()
-                return self.prompt_claude_code(prompt_text)
+                if prompt_text:
+                    return self.prompt_claude_code(prompt_text)
 
         # ── Focus window ──
         for prefix in ["focus ", "switch to ", "go to ", "bring up "]:
@@ -586,9 +591,9 @@ class CommandRouter:
                 log.info(f"[HOT] Parsed chain: {chain}")
                 return self._run_cc("chain", chain)
 
-        # ── Fallback: treat as a prompt to Cowork ──
-        log.info("[?] No specific command matched — sending as Cowork prompt")
-        return self.prompt_cowork(text)
+        # ── Fallback: send to Claude Code in terminal ──
+        log.info("[?] No specific command matched — sending to Claude Code")
+        return self.prompt_claude_code(text)
 
     # ─── Handler Methods ─────────────────────────────────────────────────
 
