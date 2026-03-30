@@ -533,12 +533,16 @@ class Jarvis:
                 pcm = audio_stream.read(self.OWW_CHUNK, exception_on_overflow=False)
                 audio_array = np.frombuffer(pcm, dtype=np.int16)
 
-                # Feed to OpenWakeWord
+                # Feed to OpenWakeWord — predict() returns a dict of {model_name: score}
                 prediction = self.oww_model.predict(audio_array)
 
-                # Check if "hey_jarvis" score exceeds threshold
-                scores = self.oww_model.get_keyword_predictions()
-                jarvis_score = scores.get("hey_jarvis", 0)
+                # Get the score for hey_jarvis from the prediction dict
+                # The key might be the full path or just the model name
+                jarvis_score = 0
+                for key, score in prediction.items():
+                    if "jarvis" in key.lower():
+                        jarvis_score = score
+                        break
 
                 if jarvis_score > threshold:
                     log.info(f"[WAKE] Wake word detected! — 'HEY JARVIS' (confidence: {jarvis_score:.2f})")
