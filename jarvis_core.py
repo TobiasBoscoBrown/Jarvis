@@ -294,7 +294,7 @@ class AudioRecorder:
         start_time = time.time()
 
         # Small initial delay to let user start speaking
-        time.sleep(0.5)
+        time.sleep(0.2)  # Reduced from 0.5 for faster response
 
         while True:
             elapsed = time.time() - start_time
@@ -1422,11 +1422,11 @@ class Jarvis:
         self.pa = pyaudio.PyAudio()
         audio_stream = self.pa.open(
             rate=self.OWW_SAMPLE_RATE, channels=1, format=pyaudio.paInt16,
-            input=True, frames_per_buffer=self.OWW_CHUNK,
+            input=True, frames_per_buffer=640,  # Smaller chunks for faster detection
             input_device_index=CONFIG.get("audio_device_index"))
 
-        threshold_high = CONFIG.get("oww_threshold", 0.5)
-        threshold_low = CONFIG.get("oww_threshold_low", 0.2)
+        threshold_high = CONFIG.get("oww_threshold", 0.4)  # More sensitive
+        threshold_low = CONFIG.get("oww_threshold_low", 0.15)  # More sensitive
 
         log.info("[MIC] Say 'Hey Jarvis' or just 'Jarvis' to start")
         log.info(f"     Thresholds: high={threshold_high}, low={threshold_low}")
@@ -1440,7 +1440,7 @@ class Jarvis:
 
         try:
             while self.running:
-                pcm = audio_stream.read(self.OWW_CHUNK, exception_on_overflow=False)
+                pcm = audio_stream.read(640, exception_on_overflow=False)  # Use smaller chunk
                 audio_array = np.frombuffer(pcm, dtype=np.int16)
                 prediction = self.oww_model.predict(audio_array)
 
