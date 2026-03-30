@@ -4,7 +4,7 @@
     "whisper_model": "whisper-1",
     "silence_threshold": 1.5,
     "sample_rate": 16000,
-    "porcupine_sensitivity": 0.7,
+    "oww_threshold": 0.5,
     "audio_device_index": null,
     "cc_py_path": "C:\\Users\\tobia\\Desktop\\ClaudeBridge\\skills\\cc.py",
     "claude_code_terminal": "Windows Terminal",

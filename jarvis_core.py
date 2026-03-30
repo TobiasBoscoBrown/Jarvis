@@ -1,12 +1,14 @@
 """
 Jarvis Voice Assistant — Core Engine
 =====================================
-Wake-word detection via Porcupine ("Jarvis") + OpenAI Whisper STT
+Wake-word detection via OpenWakeWord ("Hey Jarvis") + OpenAI Whisper STT
 Routes voice commands to Claude Cowork, Claude Code, or custom actions.
+
+100% free — no API keys needed for wake-word detection.
 """
 
-import pvporcupine
 import pyaudio
+import numpy as np
 import struct
 import wave
 import os
@@ -19,6 +21,14 @@ import threading
 import subprocess
 from pathlib import Path
 from datetime import datetime
+
+# OpenWakeWord (free, open-source wake word detection)
+try:
+    import openwakeword
+    from openwakeword.model import Model as OWWModel
+except ImportError:
+    print("[!] openwakeword not found. Run: pip install openwakeword")
+    sys.exit(1)
 
 # Optional: openai for Whisper API
 try:
@@ -435,37 +445,40 @@ def play_beep(frequency=440, duration_ms=200):
 class Jarvis:
     """Main Jarvis voice assistant controller."""
 
+    # OpenWakeWord settings
+    OWW_SAMPLE_RATE = 16000
+    OWW_CHUNK = 1280  # 80ms at 16kHz — OpenWakeWord's expected frame size
+
     def __init__(self):
-        self.recorder = AudioRecorder(sample_rate=CONFIG.get("sample_rate", 16000))
+        self.recorder = AudioRecorder(sample_rate=self.OWW_SAMPLE_RATE)
         self.transcriber = WhisperTranscriber()
         self.router = CommandRouter()
         self.running = False
-        self.porcupine = None
+        self.oww_model = None
         self.pa = None
 
     def start(self):
-        """Initialize Porcupine and start listening."""
+        """Initialize OpenWakeWord and start listening."""
         log.info("=" * 60)
         log.info("🤖 JARVIS Voice Assistant Starting...")
         log.info("=" * 60)
 
         try:
-            # Initialize Porcupine with built-in "Jarvis" keyword
-            self.porcupine = pvporcupine.create(
-                keywords=[CONFIG.get("wake_word", "jarvis")],
-                sensitivities=[CONFIG.get("porcupine_sensitivity", 0.7)]
-            )
-            log.info(f"✅ Porcupine initialized (wake word: '{CONFIG.get('wake_word', 'jarvis')}')")
-            log.info(f"   Sample rate: {self.porcupine.sample_rate} Hz")
-            log.info(f"   Frame length: {self.porcupine.frame_length}")
+            # Download pre-trained models on first run (tiny, ~few MB)
+            openwakeword.utils.download_models()
 
-        except pvporcupine.PorcupineActivationError:
-            log.error("❌ Porcupine activation error — you may need an AccessKey.")
-            log.error("   Get a free key at https://console.picovoice.ai/")
-            log.error("   Then set PORCUPINE_ACCESS_KEY environment variable")
-            sys.exit(1)
+            # Initialize OpenWakeWord — "hey_jarvis" is a built-in model
+            self.oww_model = OWWModel(
+                wakeword_models=["hey_jarvis"],
+                inference_framework="onnx"
+            )
+            threshold = CONFIG.get("oww_threshold", 0.5)
+            log.info(f"✅ OpenWakeWord initialized (model: 'hey_jarvis', threshold: {threshold})")
+            log.info(f"   100% free — no API keys needed for wake word detection")
+
         except Exception as e:
-            log.error(f"❌ Porcupine init failed: {e}")
+            log.error(f"❌ OpenWakeWord init failed: {e}")
+            log.error("   Try: pip install openwakeword")
             sys.exit(1)
 
         # Initialize PyAudio
@@ -473,13 +486,15 @@ class Jarvis:
         device_index = CONFIG.get("audio_device_index")
 
         audio_stream = self.pa.open(
-            rate=self.porcupine.sample_rate,
+            rate=self.OWW_SAMPLE_RATE,
             channels=1,
             format=pyaudio.paInt16,
             input=True,
-            frames_per_buffer=self.porcupine.frame_length,
+            frames_per_buffer=self.OWW_CHUNK,
             input_device_index=device_index
         )
+
+        threshold = CONFIG.get("oww_threshold", 0.5)
 
         log.info("🎤 Microphone active — say 'Hey Jarvis' to start a command")
         log.info("   Press Ctrl+C to quit")
@@ -490,14 +505,21 @@ class Jarvis:
         try:
             while self.running:
                 # Read audio frame for wake-word detection
-                pcm = audio_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
-                pcm_unpacked = struct.unpack_from("h" * self.porcupine.frame_length, pcm)
+                pcm = audio_stream.read(self.OWW_CHUNK, exception_on_overflow=False)
+                audio_array = np.frombuffer(pcm, dtype=np.int16)
 
-                # Check for wake word
-                keyword_index = self.porcupine.process(pcm_unpacked)
+                # Feed to OpenWakeWord
+                prediction = self.oww_model.predict(audio_array)
 
-                if keyword_index >= 0:
-                    log.info("🟢 Wake word detected! — 'JARVIS'")
+                # Check if "hey_jarvis" score exceeds threshold
+                scores = self.oww_model.get_keyword_predictions()
+                jarvis_score = scores.get("hey_jarvis", 0)
+
+                if jarvis_score > threshold:
+                    log.info(f"🟢 Wake word detected! — 'HEY JARVIS' (confidence: {jarvis_score:.2f})")
+                    # Reset the model state to avoid repeat triggers
+                    self.oww_model.reset()
+
                     play_beep(880, 150)  # High beep = listening
 
                     # Record the command
@@ -530,8 +552,6 @@ class Jarvis:
     def stop(self):
         """Clean up resources."""
         self.running = False
-        if self.porcupine:
-            self.porcupine.delete()
         if self.pa:
             self.pa.terminate()
         log.info("🔴 Jarvis shut down cleanly.")

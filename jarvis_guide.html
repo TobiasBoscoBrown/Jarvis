@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS Voice Assistant — Interactive Guide</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #0a0e17;
+    --bg2: #111827;
+    --bg3: #1a2235;
+    --accent: #00d4ff;
+    --accent2: #7c3aed;
+    --accent3: #10b981;
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+    --border: #1e293b;
+    --glow: rgba(0, 212, 255, 0.15);
+    --glow2: rgba(124, 58, 237, 0.15);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow-x: hidden;
+    line-height: 1.6;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, var(--glow) 0%, transparent 70%);
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    animation: pulse 4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.5; }
+    50% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+  }
+
+  .hero h1 {
+    font-size: 4.5rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    position: relative;
+    z-index: 1;
+    letter-spacing: -2px;
+  }
+
+  .hero .subtitle {
+    font-size: 1.3rem;
+    color: var(--text-dim);
+    margin-top: 1rem;
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero .cta {
+    margin-top: 2.5rem;
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero .cta a {
+    display: inline-block;
+    padding: 14px 36px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    font-weight: 600;
+    border-radius: 12px;
+    text-decoration: none;
+    font-size: 1.1rem;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+
+  .hero .cta a:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(0,212,255,0.3);
+  }
+
+  /* ── Sections ── */
+  section {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 80px 24px;
+  }
+
+  h2 {
+    font-size: 2.2rem;
+    font-weight: 700;
+    margin-bottom: 1.5rem;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  h3 {
+    font-size: 1.3rem;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+  }
+
+  p { color: var(--text-dim); margin-bottom: 1rem; }
+
+  /* ── Flow Diagram ── */
+  .flow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 3rem 0;
+    flex-wrap: wrap;
+  }
+
+  .flow-node {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 24px;
+    text-align: center;
+    min-width: 160px;
+    position: relative;
+    transition: all 0.3s;
+  }
+
+  .flow-node:hover {
+    border-color: var(--accent);
+    box-shadow: 0 0 30px var(--glow);
+    transform: translateY(-4px);
+  }
+
+  .flow-node .icon { font-size: 2rem; margin-bottom: 8px; }
+  .flow-node .label { font-weight: 600; font-size: 0.95rem; }
+  .flow-node .desc { font-size: 0.78rem; color: var(--text-dim); margin-top: 4px; }
+
+  .flow-arrow {
+    font-size: 1.8rem;
+    color: var(--accent);
+    padding: 0 8px;
+    animation: arrowPulse 2s ease-in-out infinite;
+  }
+
+  @keyframes arrowPulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  /* ── Command Cards ── */
+  .cmd-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+    margin-top: 2rem;
+  }
+
+  .cmd-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    transition: all 0.3s;
+    cursor: pointer;
+  }
+
+  .cmd-card:hover {
+    border-color: var(--accent2);
+    box-shadow: 0 0 25px var(--glow2);
+    transform: translateY(-3px);
+  }
+
+  .cmd-card .voice {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    font-size: 1rem;
+    padding: 8px 14px;
+    background: rgba(0,212,255,0.08);
+    border-radius: 8px;
+    display: inline-block;
+    margin-bottom: 12px;
+  }
+
+  .cmd-card .voice::before { content: '🎤 "'; }
+  .cmd-card .voice::after { content: '"'; }
+
+  .cmd-card .what-happens {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+  }
+
+  .cmd-card .tag {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-top: 10px;
+  }
+
+  .tag-cowork { background: rgba(124,58,237,0.2); color: #a78bfa; }
+  .tag-code { background: rgba(16,185,129,0.2); color: #6ee7b7; }
+  .tag-system { background: rgba(251,191,36,0.2); color: #fbbf24; }
+  .tag-nav { background: rgba(0,212,255,0.2); color: var(--accent); }
+
+  /* ── Setup Steps ── */
+  .steps {
+    counter-reset: step;
+    margin-top: 2rem;
+  }
+
+  .step {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 28px;
+    align-items: flex-start;
+  }
+
+  .step-num {
+    counter-increment: step;
+    width: 48px; height: 48px;
+    min-width: 48px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.2rem;
+    color: #fff;
+  }
+
+  .step-num::after { content: counter(step); }
+
+  .step-content { flex: 1; }
+  .step-content h4 { font-size: 1.1rem; margin-bottom: 4px; }
+  .step-content p { margin-bottom: 0; }
+
+  code, .code-block {
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--bg3);
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.88rem;
+    color: var(--accent3);
+  }
+
+  .code-block {
+    display: block;
+    padding: 16px 20px;
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow-x: auto;
+    white-space: pre;
+    line-height: 1.7;
+  }
+
+  /* ── Create Commands Section ── */
+  .create-demo {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 32px;
+    margin-top: 2rem;
+  }
+
+  .json-example {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    line-height: 1.8;
+    overflow-x: auto;
+    color: var(--text);
+  }
+
+  .json-key { color: #a78bfa; }
+  .json-str { color: #6ee7b7; }
+  .json-bracket { color: var(--text-dim); }
+
+  /* ── Architecture ── */
+  .arch-diagram {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 40px;
+    margin: 2rem 0;
+    text-align: center;
+  }
+
+  .arch-layer {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    margin: 12px 0;
+    flex-wrap: wrap;
+  }
+
+  .arch-box {
+    padding: 14px 24px;
+    border-radius: 12px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    min-width: 140px;
+    text-align: center;
+  }
+
+  .arch-box.input { background: rgba(0,212,255,0.15); border: 1px solid var(--accent); color: var(--accent); }
+  .arch-box.engine { background: rgba(124,58,237,0.15); border: 1px solid var(--accent2); color: #a78bfa; }
+  .arch-box.output { background: rgba(16,185,129,0.15); border: 1px solid var(--accent3); color: #6ee7b7; }
+  .arch-box.store { background: rgba(251,191,36,0.15); border: 1px solid #fbbf24; color: #fbbf24; }
+
+  .arch-connector {
+    font-size: 1.4rem;
+    color: var(--text-dim);
+    margin: 4px 0;
+  }
+
+  /* ── Tabs ── */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 0;
+  }
+
+  .tab {
+    padding: 10px 24px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    font-family: 'Inter', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s;
+  }
+
+  .tab:hover { color: var(--text); }
+  .tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* ── Tips ── */
+  .tip-box {
+    background: rgba(0,212,255,0.06);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px;
+    border-radius: 0 12px 12px 0;
+    margin: 16px 0;
+  }
+
+  .tip-box strong { color: var(--accent); }
+
+  /* ── Footer ── */
+  footer {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ── Nav ── */
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    background: rgba(10,14,23,0.85);
+    backdrop-filter: blur(12px);
+    padding: 12px 24px;
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    z-index: 100;
+    border-bottom: 1px solid var(--border);
+  }
+
+  nav a {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: color 0.2s;
+  }
+
+  nav a:hover { color: var(--accent); }
+
+  /* ── Animations ── */
+  .fade-in {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.6s ease-out;
+  }
+  .fade-in.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ── Waveform ── */
+  .waveform {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 50px;
+    margin: 2rem 0;
+  }
+
+  .wave-bar {
+    width: 4px;
+    background: linear-gradient(to top, var(--accent), var(--accent2));
+    border-radius: 2px;
+    animation: waveAnim 1.2s ease-in-out infinite;
+  }
+
+  @keyframes waveAnim {
+    0%, 100% { height: 8px; }
+    50% { height: 40px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="#how-it-works">How It Works</a>
+  <a href="#commands">Commands</a>
+  <a href="#setup">Setup</a>
+  <a href="#custom">Create Commands</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#tips">Tips</a>
+</nav>
+
+<!-- ════════════════════ HERO ════════════════════ -->
+<div class="hero">
+  <h1>JARVIS</h1>
+  <p class="subtitle">Voice-controlled assistant for Claude Cowork & Claude Code</p>
+  <div class="waveform">
+    <script>
+      // Generate wave bars
+      for (let i = 0; i < 40; i++) {
+        document.write(`<div class="wave-bar" style="animation-delay:${i*0.05}s"></div>`);
+      }
+    </script>
+  </div>
+  <div class="cta"><a href="#setup">Get Started</a></div>
+</div>
+
+<!-- ════════════════════ HOW IT WORKS ════════════════════ -->
+<section id="how-it-works" class="fade-in">
+  <h2>How It Works</h2>
+  <p>Jarvis runs in the background, always listening for "Hey Jarvis". When it hears the wake word, it records your voice command, transcribes it with OpenAI Whisper, and routes it to Claude Cowork, Claude Code, or any custom action you define.</p>
+
+  <div class="flow">
+    <div class="flow-node">
+      <div class="icon">🎤</div>
+      <div class="label">You Speak</div>
+      <div class="desc">"Hey Jarvis, prompt Cowork to fix the pipeline"</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">
+      <div class="icon">🐻</div>
+      <div class="label">Porcupine</div>
+      <div class="desc">Detects "Jarvis" wake word locally</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">
+      <div class="icon">🧠</div>
+      <div class="label">Whisper API</div>
+      <div class="desc">Transcribes your speech to text</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">
+      <div class="icon">🔀</div>
+      <div class="label">Command Router</div>
+      <div class="desc">Parses intent & routes to handler</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">
+      <div class="icon">⚡</div>
+      <div class="label">Execute</div>
+      <div class="desc">Types into Cowork, terminal, or runs action</div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════ COMMANDS ════════════════════ -->
+<section id="commands" class="fade-in">
+  <h2>Voice Commands</h2>
+  <p>These are all the built-in commands. Say "Hey Jarvis" followed by any of these:</p>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab(event, 'tab-cowork')">Cowork</button>
+    <button class="tab" onclick="switchTab(event, 'tab-code')">Claude Code</button>
+    <button class="tab" onclick="switchTab(event, 'tab-system')">System</button>
+    <button class="tab" onclick="switchTab(event, 'tab-nav')">Navigation</button>
+  </div>
+
+  <div id="tab-cowork" class="tab-content active">
+    <div class="cmd-grid">
+      <div class="cmd-card">
+        <div class="voice">open cowork convo Fix Pipeline Settings</div>
+        <div class="what-happens">Opens Claude Cowork, searches for the "Fix Pipeline Settings" conversation, and switches to it.</div>
+        <span class="tag tag-cowork">Cowork</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">prompt cowork to refactor the auth module</div>
+        <div class="what-happens">Focuses the Cowork window, clicks the input box, types your prompt, and presses Enter — hands-free.</div>
+        <span class="tag tag-cowork">Cowork</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">open cowork</div>
+        <div class="what-happens">Launches Claude Cowork (claude.ai) in your default browser.</div>
+        <span class="tag tag-cowork">Cowork</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">tell cowork to review the last commit</div>
+        <div class="what-happens">Same as "prompt cowork" — alternative phrasing. Jarvis understands many variations.</div>
+        <span class="tag tag-cowork">Cowork</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-code" class="tab-content">
+    <div class="cmd-grid">
+      <div class="cmd-card">
+        <div class="voice">prompt claude code to run the tests</div>
+        <div class="what-happens">Focuses your terminal window, types the command, and presses Enter. Claude Code runs it.</div>
+        <span class="tag tag-code">Claude Code</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">tell claude code to fix the linting errors</div>
+        <div class="what-happens">Sends the instruction directly to Claude Code running in your terminal.</div>
+        <span class="tag tag-code">Claude Code</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">claude code create a new React component for user settings</div>
+        <div class="what-happens">Types the full instruction into the Claude Code terminal session.</div>
+        <span class="tag tag-code">Claude Code</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-system" class="tab-content">
+    <div class="cmd-grid">
+      <div class="cmd-card">
+        <div class="voice">take screenshot</div>
+        <div class="what-happens">Captures the full screen and saves it to the screenshots folder.</div>
+        <span class="tag tag-system">System</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">type hello world this is a test</div>
+        <div class="what-happens">Types the text at your current cursor position — instant voice-to-type anywhere.</div>
+        <span class="tag tag-system">System</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">search for best practices for React hooks</div>
+        <div class="what-happens">Opens Chrome and Googles your query. Also works with "google [query]".</div>
+        <span class="tag tag-system">System</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">list commands</div>
+        <div class="what-happens">Prints all available commands (built-in + custom) to the Jarvis console.</div>
+        <span class="tag tag-system">System</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-nav" class="tab-content">
+    <div class="cmd-grid">
+      <div class="cmd-card">
+        <div class="voice">open terminal</div>
+        <div class="what-happens">Launches Windows Terminal (or your configured terminal app).</div>
+        <span class="tag tag-nav">Navigation</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">focus Chrome</div>
+        <div class="what-happens">Brings the Chrome window to the foreground. Works with any window name.</div>
+        <span class="tag tag-nav">Navigation</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">focus VS Code</div>
+        <div class="what-happens">Brings VS Code to the foreground. Uses substring matching on window titles.</div>
+        <span class="tag tag-nav">Navigation</span>
+      </div>
+      <div class="cmd-card">
+        <div class="voice">stop</div>
+        <div class="what-happens">Shuts down Jarvis gracefully. Also works with "quit", "exit", "goodbye".</div>
+        <span class="tag tag-nav">Navigation</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════ SETUP ════════════════════ -->
+<section id="setup" class="fade-in">
+  <h2>Setup Guide</h2>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num"></div>
+      <div class="step-content">
+        <h4>Get a Free Porcupine Access Key</h4>
+        <p>Go to <code>https://console.picovoice.ai/</code>, create a free account, and copy your Access Key. Then set it as an environment variable:</p>
+        <div class="code-block">setx PORCUPINE_ACCESS_KEY "your-key-here"</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num"></div>
+      <div class="step-content">
+        <h4>Run Setup (Already Done!)</h4>
+        <p>Dependencies (pvporcupine, pyaudio, openai) are already installed. Your Whisper API key is configured. If you ever need to reinstall:</p>
+        <div class="code-block">cd Desktop\Jarvis
+setup.bat</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num"></div>
+      <div class="step-content">
+        <h4>Launch Jarvis</h4>
+        <p>Double-click <code>START_JARVIS.bat</code> on your Desktop, or run from terminal:</p>
+        <div class="code-block">cd Desktop\Jarvis
+python jarvis_core.py</div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-num"></div>
+      <div class="step-content">
+        <h4>Say "Hey Jarvis"</h4>
+        <p>The console will show a green indicator when the wake word is detected. Speak your command naturally — Jarvis handles the rest.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="tip-box">
+    <strong>One-time only:</strong> The Porcupine Access Key (step 1) is the only manual step. Everything else is pre-configured. The key is free and takes 30 seconds to get.
+  </div>
+</section>
+
+<!-- ════════════════════ CUSTOM COMMANDS ════════════════════ -->
+<section id="custom" class="fade-in">
+  <h2>Create Your Own Voice Commands</h2>
+  <p>There are two ways to add custom commands — edit the JSON file directly, or use the interactive command manager.</p>
+
+  <h3>Method 1: Edit custom_commands.json</h3>
+  <p>Open <code>Desktop\Jarvis\commands\custom_commands.json</code> and add an entry:</p>
+
+  <div class="create-demo">
+    <div class="json-example">
+<span class="json-bracket">{</span>
+  <span class="json-key">"commands"</span>: <span class="json-bracket">[</span>
+    <span class="json-bracket">{</span>
+      <span class="json-key">"name"</span>: <span class="json-str">"deploy to production"</span>,
+      <span class="json-key">"triggers"</span>: <span class="json-bracket">[</span>
+        <span class="json-str">"deploy to production"</span>,
+        <span class="json-str">"ship it"</span>,
+        <span class="json-str">"deploy prod"</span>
+      <span class="json-bracket">]</span>,
+      <span class="json-key">"action"</span>: <span class="json-str">"prompt_claude_code"</span>,
+      <span class="json-key">"description"</span>: <span class="json-str">"Tells Claude Code to deploy"</span>
+    <span class="json-bracket">}</span>,
+    <span class="json-bracket">{</span>
+      <span class="json-key">"name"</span>: <span class="json-str">"open my project"</span>,
+      <span class="json-key">"triggers"</span>: <span class="json-bracket">[</span>
+        <span class="json-str">"open my project"</span>,
+        <span class="json-str">"open viral engine"</span>
+      <span class="json-bracket">]</span>,
+      <span class="json-key">"action"</span>: <span class="json-str">"chain:launch code; wait 2; focus Visual Studio Code"</span>,
+      <span class="json-key">"description"</span>: <span class="json-str">"Opens VS Code"</span>
+    <span class="json-bracket">}</span>
+  <span class="json-bracket">]</span>
+<span class="json-bracket">}</span>
+    </div>
+  </div>
+
+  <div class="tip-box" style="margin-top: 20px;">
+    <strong>Hot reload:</strong> After editing the file, just say "Hey Jarvis, reload commands" — no restart needed!
+  </div>
+
+  <h3 style="margin-top: 2rem;">Method 2: Command Manager CLI</h3>
+  <p>Run the interactive manager for a guided experience:</p>
+  <div class="code-block">cd Desktop\Jarvis
+python jarvis_manager.py</div>
+  <p>This lets you add, edit, delete, and backup commands through a menu interface.</p>
+
+  <h3 style="margin-top: 2rem;">Available Action Types</h3>
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <h4 style="color: var(--accent);">Built-in Actions</h4>
+      <div class="what-happens">
+        <code>open_cowork</code> — Open Claude Cowork<br>
+        <code>open_terminal</code> — Open terminal<br>
+        <code>screenshot</code> — Take screenshot<br>
+        <code>open_cowork_convo</code> — Open conversation<br>
+        <code>prompt_cowork</code> — Send prompt to Cowork<br>
+        <code>prompt_claude_code</code> — Send to Claude Code<br>
+        <code>type_text</code> — Type at cursor<br>
+        <code>search_web</code> — Google search<br>
+        <code>focus_window</code> — Focus a window
+      </div>
+    </div>
+    <div class="cmd-card">
+      <h4 style="color: var(--accent2);">Custom Chain Actions</h4>
+      <div class="what-happens">
+        Use <code>chain:...</code> for advanced multi-step automations. These run cc.py commands in sequence:<br><br>
+        <code>chain:launch notepad; wait 1; type Hello</code><br><br>
+        <code>chain:focus Chrome; key ctrl+t; type github.com; key enter</code><br><br>
+        Any cc.py action works inside chains — clicks, types, screenshots, waits, window management.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════ ARCHITECTURE ════════════════════ -->
+<section id="architecture" class="fade-in">
+  <h2>Architecture</h2>
+
+  <div class="arch-diagram">
+    <div class="arch-layer">
+      <div class="arch-box input">Microphone Input</div>
+    </div>
+    <div class="arch-connector">↓</div>
+    <div class="arch-layer">
+      <div class="arch-box engine">Porcupine Wake Word</div>
+    </div>
+    <div class="arch-connector">↓ "Jarvis" detected</div>
+    <div class="arch-layer">
+      <div class="arch-box engine">Audio Recorder</div>
+      <div class="arch-box engine">Silence Detection</div>
+    </div>
+    <div class="arch-connector">↓ WAV file</div>
+    <div class="arch-layer">
+      <div class="arch-box engine">OpenAI Whisper API</div>
+    </div>
+    <div class="arch-connector">↓ Transcribed text</div>
+    <div class="arch-layer">
+      <div class="arch-box engine">Command Router</div>
+      <div class="arch-box store">custom_commands.json</div>
+    </div>
+    <div class="arch-connector">↓</div>
+    <div class="arch-layer">
+      <div class="arch-box output">Claude Cowork</div>
+      <div class="arch-box output">Claude Code</div>
+      <div class="arch-box output">cc.py (Desktop)</div>
+      <div class="arch-box output">Browser</div>
+    </div>
+  </div>
+
+  <h3>File Structure</h3>
+  <div class="code-block">Desktop/Jarvis/
+├── jarvis_core.py          # Main engine (wake word → transcribe → route)
+├── jarvis_manager.py       # CLI tool to manage custom commands
+├── config.json             # API keys, settings (git-ignored)
+├── config.example.json     # Template config (safe to share)
+├── requirements.txt        # Python dependencies
+├── setup.bat               # One-time installer
+├── START_JARVIS.bat        # Launch script
+├── .gitignore
+├── commands/
+│   └── custom_commands.json  # Your custom voice commands
+├── audio/                  # Recorded audio clips (git-ignored)
+└── logs/                   # Daily log files (git-ignored)</div>
+</section>
+
+<!-- ════════════════════ TIPS ════════════════════ -->
+<section id="tips" class="fade-in">
+  <h2>Pro Tips</h2>
+
+  <div class="cmd-grid">
+    <div class="cmd-card">
+      <h4 style="color: var(--accent);">Speak naturally</h4>
+      <div class="what-happens">You don't need exact phrases. "Hey Jarvis, can you prompt Cowork to fix the auth bug" works just as well as "prompt cowork fix auth bug". Whisper handles natural speech beautifully.</div>
+    </div>
+    <div class="cmd-card">
+      <h4 style="color: var(--accent);">Voice-to-type anywhere</h4>
+      <div class="what-happens">Click into any text field (email, Slack, docs, code editor), then say "Hey Jarvis, type [your message]". Instant voice dictation with near-zero friction.</div>
+    </div>
+    <div class="cmd-card">
+      <h4 style="color: var(--accent);">Chain commands for workflows</h4>
+      <div class="what-happens">Create custom commands with <code>chain:...</code> actions to automate entire workflows. Open apps, navigate, type, click — all from one voice command.</div>
+    </div>
+    <div class="cmd-card">
+      <h4 style="color: var(--accent);">Fallback behavior</h4>
+      <div class="what-happens">If Jarvis doesn't recognize a specific command pattern, it automatically sends your speech as a prompt to Claude Cowork. So you can just talk to it freely.</div>
+    </div>
+    <div class="cmd-card">
+      <h4 style="color: var(--accent);">Check the logs</h4>
+      <div class="what-happens">Every command is logged to <code>logs/jarvis_YYYYMMDD.log</code>. If something isn't working right, the logs show exactly what was heard, how it was routed, and what happened.</div>
+    </div>
+    <div class="cmd-card">
+      <h4 style="color: var(--accent);">Sensitivity tuning</h4>
+      <div class="what-happens">If Jarvis triggers too easily (or not enough), adjust <code>porcupine_sensitivity</code> in config.json. Range is 0.0 to 1.0 — higher = more sensitive. Default 0.7 is a good balance.</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  JARVIS Voice Assistant — Built for Toby<br>
+  Porcupine (Picovoice) + OpenAI Whisper + cc.py Desktop Automation
+</footer>
+
+<script>
+  // Tab switching
+  function switchTab(e, tabId) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    e.target.classList.add('active');
+    document.getElementById(tabId).classList.add('active');
+  }
+
+  // Scroll-triggered fade-in
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  // Smooth scrolling for nav links
+  document.querySelectorAll('nav a').forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      document.querySelector(a.getAttribute('href')).scrollIntoView({ behavior: 'smooth' });
+    });
+  });
+</script>
+
+</body>
+</html>

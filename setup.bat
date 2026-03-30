@@ -12,8 +12,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Installing Python dependencies...
-pip install pvporcupine pyaudio openai --upgrade
+echo [1/2] Installing Python dependencies...
+pip install openwakeword pyaudio openai numpy onnxruntime --upgrade
 
 if errorlevel 1 (
     echo.
@@ -24,30 +24,15 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/3] Getting Porcupine Access Key...
-echo.
-echo   Porcupine requires a FREE access key from Picovoice.
-echo   1. Go to: https://console.picovoice.ai/
-echo   2. Sign up (free)
-echo   3. Copy your Access Key
-echo.
-set /p ACCESS_KEY="  Paste your Access Key here: "
-
-if not "%ACCESS_KEY%"=="" (
-    setx PORCUPINE_ACCESS_KEY "%ACCESS_KEY%"
-    set PORCUPINE_ACCESS_KEY=%ACCESS_KEY%
-    echo   ✓ Access Key saved to environment
-) else (
-    echo   [SKIP] No key entered — set PORCUPINE_ACCESS_KEY later
-)
-
-echo.
-echo [3/3] Verifying installation...
-python -c "import pvporcupine; import pyaudio; import openai; print('All packages OK!')"
+echo [2/2] Downloading wake-word models (one-time, ~5 MB)...
+python -c "import openwakeword; openwakeword.utils.download_models(); print('Models downloaded!')"
 
 echo.
 echo ============================================================
-echo   Setup complete! Run Jarvis with:
+echo   Setup complete!  NO API keys needed for wake word.
+echo   (Only your OpenAI key in config.json for Whisper STT)
+echo.
+echo   Run Jarvis with:
 echo     python jarvis_core.py
 echo   Or double-click START_JARVIS.bat
 echo ============================================================
