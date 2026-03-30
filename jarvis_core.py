@@ -854,13 +854,13 @@ class CommandRouter:
 
         if any(text_lower.startswith(p) for p in [
             "open command manager", "command manager", "open commands",
-            "manage commands", "open manager"]):
-            gui_path = BASE_DIR / "jarvis_gui.py"
+            "manage commands", "open manager", "open enhanced manager"]):
+            gui_path = BASE_DIR / "jarvis_gui_enhanced.py"
             subprocess.Popen([sys.executable, str(gui_path)],
                             creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
             if self.tts:
-                self.tts.speak_async("Opening the command manager.")
-            return {"status": "ok", "action": "open_command_manager"}
+                self.tts.speak_async("Opening the enhanced command manager.")
+            return {"status": "ok", "action": "open_enhanced_command_manager"}
 
         if any(text_lower.startswith(p) for p in [
             "add command", "new command", "create command",
@@ -1025,12 +1025,12 @@ class CommandRouter:
     # ─── Voice Command Creation ──────────────────────────────────────────
 
     def _start_voice_create(self, text: str):
-        log.info("[+] Starting voice command creation...")
+        log.info("[+] Starting enhanced voice command creation...")
         self._creating_command = True
-        self._new_cmd_data = {"step": "name"}
+        self._new_cmd_data = {"step": "name", "gui_mode": True}
         if self.tts:
-            self.tts.speak_async("Alright, let's create a new command. What shall we call it?")
-        return {"status": "listening", "action": "voice_create", "message": "Say the command name"}
+            self.tts.speak_async("Alright, let's create a new command. You can use voice or open the enhanced GUI for visual editing.")
+        return {"status": "listening", "action": "voice_create", "message": "Say the command name or say 'open GUI' for visual editing"}
 
     def _voice_create_step(self, text: str):
         step = self._new_cmd_data.get("step", "name")
@@ -1041,6 +1041,17 @@ class CommandRouter:
             if self.tts:
                 self.tts.speak_async("Command creation cancelled.")
             return {"status": "cancelled", "action": "voice_create"}
+        
+        # Check for GUI mode request
+        if "gui" in text.lower() or "visual" in text.lower():
+            gui_path = BASE_DIR / "jarvis_gui_enhanced.py"
+            subprocess.Popen([sys.executable, str(gui_path)],
+                            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+            if self.tts:
+                self.tts.speak_async("Opening the enhanced command manager for visual editing.")
+            self._creating_command = False
+            self._new_cmd_data = {}
+            return {"status": "opened_gui", "action": "voice_create"}
 
         if step == "name":
             self._new_cmd_data["name"] = text.strip()
