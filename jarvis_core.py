@@ -1145,20 +1145,25 @@ class CommandRouter:
             log.info(f"[VISUAL] Got {len(elements)} elements from scene_parser")
 
             # Step 2: Build a compact element summary for Claude
+            # Keep it short: only HIGH confidence + first 40 elements to stay under limits
             element_summary = ""
             if elements:
                 lines = []
-                for el in elements[:80]:  # Cap at 80 to keep prompt manageable
+                # Prioritize HIGH confidence elements, then MED
+                sorted_els = sorted(elements, key=lambda e: (
+                    0 if e.get("confidence_tier") == "HIGH" else
+                    1 if e.get("confidence_tier") == "MED" else 2
+                ))
+                for el in sorted_els[:40]:
                     label = el.get("label", "")
-                    desc = el.get("description", "")
                     el_class = el.get("element_class", "")
                     cx, cy = el.get("cx", 0), el.get("cy", 0)
                     el_type = el.get("type", "")
-                    conf = el.get("confidence_tier", "")
-                    lines.append(f"  [{el.get('id','')}] {el_type}/{el_class}: '{label}' @ ({cx},{cy}) — {desc} [{conf}]")
+                    lines.append(f"  {el_type}/{el_class}: '{label}' @ ({cx},{cy})")
                 element_summary = "\n".join(lines)
 
             # Step 3: Ask Claude Code CLI to identify the target
+            # Write prompt to a temp file to avoid Windows command-line length limit (8191 chars)
             log.info(f"[VISUAL] Asking Claude Code to locate '{description}' using screenshot + element map")
             t_claude = time.time()
 
@@ -1174,11 +1179,12 @@ class CommandRouter:
                 f'If you cannot find it at all, reply with just: NOT_FOUND\n'
                 f'No other text or explanation — just the coordinates or NOT_FOUND.'
             )
-            safe_prompt = vision_prompt.replace('"', '\\"').replace('\n', ' ').replace('\r', '')
 
+            # Use Popen with stdin pipe to avoid Windows 8191-char command line limit
             result = subprocess.run(
-                f'"{self.CLAUDE_CMD}" -p "{safe_prompt}" --output-format text',
-                shell=True, capture_output=True, text=True, timeout=45,
+                [str(self.CLAUDE_CMD), "-p", "-", "--output-format", "text"],
+                input=vision_prompt,
+                capture_output=True, text=True, timeout=45,
                 cwd=str(screenshot_dir),
             )
 
