@@ -125,8 +125,8 @@ class AudioRecorder:
         self.sample_rate = sample_rate
         self.channels = channels
         self.chunk_size = chunk_size
-        self.silence_threshold = CONFIG.get("silence_threshold", 1.5)
-        self.energy_threshold = 500  # RMS energy below which = silence
+        self.silence_threshold = CONFIG.get("silence_threshold", 2.5)
+        self.energy_threshold = CONFIG.get("energy_threshold", 300)  # RMS energy below which = silence
 
     def record_until_silence(self, pa_instance, stream=None):
         """Record from mic until silence detected. Returns path to WAV file."""
@@ -150,7 +150,7 @@ class AudioRecorder:
         start_time = time.time()
 
         # Small initial delay to let user start speaking
-        time.sleep(0.3)
+        time.sleep(0.5)
 
         while True:
             elapsed = time.time() - start_time
