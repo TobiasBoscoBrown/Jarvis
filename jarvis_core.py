@@ -172,6 +172,221 @@ class WhisperTranscriber:
             return ""
 
 
+# ─── Natural Language → cc.py Chain Parser ───────────────────────────────────
+
+import re
+
+# Word-to-number map for spoken numbers
+WORD_NUMS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "twenty": 20, "thirty": 30, "fifty": 50, "hundred": 100,
+    "once": 1, "twice": 2, "thrice": 3,
+}
+
+# Key name aliases (what people say → cc.py key name)
+KEY_ALIASES = {
+    "enter": "enter", "return": "enter",
+    "backspace": "backspace", "back space": "backspace", "delete": "delete",
+    "tab": "tab", "escape": "escape", "esc": "escape",
+    "space": "space", "spacebar": "space", "space bar": "space",
+    "up": "up", "up arrow": "up", "arrow up": "up",
+    "down": "down", "down arrow": "down", "arrow down": "down",
+    "left": "left", "left arrow": "left", "arrow left": "left",
+    "right": "right", "right arrow": "right", "arrow right": "right",
+    "home": "home", "end": "end",
+    "page up": "pageup", "page down": "pagedown",
+    "f1": "f1", "f2": "f2", "f3": "f3", "f4": "f4", "f5": "f5",
+    "f6": "f6", "f7": "f7", "f8": "f8", "f9": "f9", "f10": "f10",
+    "f11": "f11", "f12": "f12",
+    "control": "ctrl", "ctrl": "ctrl", "alt": "alt", "shift": "shift",
+    "windows": "win", "win": "win", "command": "ctrl",
+}
+
+def _parse_number(text):
+    """Extract a number from text like '5', 'five', 'ten'."""
+    text = text.strip().lower()
+    if text.isdigit():
+        return int(text)
+    return WORD_NUMS.get(text, None)
+
+def _resolve_key(text):
+    """Resolve a spoken key name to cc.py key name."""
+    text = text.strip().lower()
+    # Direct alias match
+    if text in KEY_ALIASES:
+        return KEY_ALIASES[text]
+    # Single letter/number
+    if len(text) == 1 and text.isalnum():
+        return text
+    # Combo like "control c" → "ctrl+c"
+    parts = text.replace(" and ", " ").replace(" plus ", "+").split()
+    resolved = []
+    for p in parts:
+        resolved.append(KEY_ALIASES.get(p, p))
+    if len(resolved) > 1:
+        return "+".join(resolved)
+    return text
+
+def parse_natural_to_chain(text):
+    """
+    Convert natural language instructions into a cc.py chain string.
+
+    Examples:
+        "press backspace 5 times, type CLAUDE, then press enter"
+        → "key backspace; key backspace; key backspace; key backspace; key backspace; type CLAUDE; key enter"
+
+        "hold control and press a, then press delete"
+        → "hold ctrl key a; key delete"
+
+        "click on the save button"
+        → "click_text save"
+
+        "scroll down 3 times"
+        → "scroll 960 540 -3"
+
+    Returns chain string or None if the text doesn't look like a hot command.
+    """
+    text = text.strip()
+    if not text:
+        return None
+
+    # Split on "then", ",", "and then", "after that"
+    segments = re.split(r'\s*(?:,\s*then\s*|,\s*and\s+then\s*|,\s*after\s+that\s*|,\s*then\s*|then\s+|,\s*)', text, flags=re.IGNORECASE)
+    segments = [s.strip() for s in segments if s.strip()]
+
+    chain_parts = []
+
+    for seg in segments:
+        seg_lower = seg.lower()
+
+        # ── "press [key] [N] times" ──
+        m = re.match(
+            r'(?:press|hit|tap|push)\s+(.+?)\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|fifty|hundred|once|twice|thrice)\s*times?',
+            seg_lower)
+        if m:
+            key = _resolve_key(m.group(1))
+            count = _parse_number(m.group(2)) or 1
+            for _ in range(min(count, 100)):  # Cap at 100 for safety
+                chain_parts.append(f"key {key}")
+            continue
+
+        # ── "press [key]" (single) ──
+        m = re.match(r'(?:press|hit|tap|push)\s+(.+)', seg_lower)
+        if m:
+            key = _resolve_key(m.group(1))
+            chain_parts.append(f"key {key}")
+            continue
+
+        # ── "hold [modifier] and press [key]" / "hold [modifier] click [x] [y]" ──
+        m = re.match(r'hold\s+(\w+)\s+(?:and\s+)?(?:press|hit|tap)\s+(.+)', seg_lower)
+        if m:
+            modifier = _resolve_key(m.group(1))
+            key = _resolve_key(m.group(2))
+            chain_parts.append(f"hold {modifier} key {key}")
+            continue
+
+        # ── "type [text]" — use ORIGINAL casing from input ──
+        m = re.match(r'(?:type|write|input|enter text)\s+(.+)', seg, flags=re.IGNORECASE)
+        if m:
+            typed_text = m.group(1).strip()
+            # Handle letter-by-letter spelling like "C L A U D E"
+            if re.match(r'^[A-Za-z0-9](\s+[A-Za-z0-9])+$', typed_text):
+                typed_text = typed_text.replace(" ", "")
+            chain_parts.append(f"type {typed_text}")
+            continue
+
+        # ── "click on [text]" / "click [text]" ──
+        m = re.match(r'(?:click|tap|press)\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+button)?$', seg_lower)
+        if m:
+            target = m.group(1).strip()
+            # If it looks like coordinates (two numbers)
+            coord_match = re.match(r'(\d+)\s+(\d+)', target)
+            if coord_match:
+                chain_parts.append(f"click {coord_match.group(1)} {coord_match.group(2)}")
+            else:
+                chain_parts.append(f"click_text {target}")
+            continue
+
+        # ── "double click on [text]" ──
+        m = re.match(r'double\s*click\s+(?:on\s+)?(?:the\s+)?(.+)', seg_lower)
+        if m:
+            chain_parts.append(f"doubleclick_text {m.group(1).strip()}")
+            continue
+
+        # ── "right click on [text]" ──
+        m = re.match(r'right\s*click\s+(?:on\s+)?(?:the\s+)?(.+)', seg_lower)
+        if m:
+            chain_parts.append(f"rightclick_text {m.group(1).strip()}")
+            continue
+
+        # ── "scroll up/down [N] times" ──
+        m = re.match(r'scroll\s+(up|down)\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten)?\s*times?', seg_lower)
+        if m:
+            direction = -1 if m.group(1) == "down" else 1
+            count = _parse_number(m.group(2)) if m.group(2) else 1
+            count = count or 1
+            chain_parts.append(f"scroll 960 540 {direction * count}")
+            continue
+
+        # ── "scroll up/down" (no count) ──
+        m = re.match(r'scroll\s+(up|down)', seg_lower)
+        if m:
+            amount = -3 if m.group(1) == "down" else 3
+            chain_parts.append(f"scroll 960 540 {amount}")
+            continue
+
+        # ── "wait [N] seconds" ──
+        m = re.match(r'wait\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:seconds?)?', seg_lower)
+        if m:
+            secs = _parse_number(m.group(1)) or 1
+            chain_parts.append(f"wait {secs}")
+            continue
+
+        # ── "select all" → ctrl+a ──
+        if seg_lower.strip() in ["select all", "select everything"]:
+            chain_parts.append("key ctrl+a")
+            continue
+
+        # ── "copy" / "paste" / "cut" / "undo" / "redo" / "save" ──
+        shortcuts = {
+            "copy": "ctrl+c", "paste": "ctrl+v", "cut": "ctrl+x",
+            "undo": "ctrl+z", "redo": "ctrl+y", "save": "ctrl+s",
+            "select all": "ctrl+a", "find": "ctrl+f", "new tab": "ctrl+t",
+            "close tab": "ctrl+w", "refresh": "f5",
+        }
+        if seg_lower.strip() in shortcuts:
+            chain_parts.append(f"key {shortcuts[seg_lower.strip()]}")
+            continue
+
+        # ── "take a screenshot" / "screenshot" ──
+        if "screenshot" in seg_lower:
+            chain_parts.append("screenshot")
+            continue
+
+        # ── Fallback: if nothing matched, skip this segment ──
+        log.warning(f"[PARSE] Could not parse segment: '{seg}'")
+
+    if chain_parts:
+        return "; ".join(chain_parts)
+    return None
+
+def looks_like_hot_command(text):
+    """Heuristic: does this text look like a direct keyboard/mouse instruction?"""
+    text_lower = text.lower()
+    hot_words = [
+        "press ", "hit ", "tap ", "push ",
+        "type ", "write ",
+        "click ", "double click", "right click",
+        "scroll ", "hold ", "select all",
+        "copy", "paste", "cut", "undo", "redo", "save",
+        "backspace", "enter", "delete", "tab", "escape",
+        " times", " then ",
+    ]
+    return any(w in text_lower for w in hot_words)
+
+
 # ─── Command Router ──────────────────────────────────────────────────────────
 
 class CommandRouter:
@@ -363,6 +578,13 @@ class CommandRouter:
             return self.take_screenshot()
         if text_lower in ["stop", "quit", "exit", "goodbye", "shut down"]:
             return {"status": "exit", "message": "Shutting down Jarvis"}
+
+        # ── Hot commands: natural language → keyboard/mouse actions ──
+        if looks_like_hot_command(text):
+            chain = parse_natural_to_chain(text)
+            if chain:
+                log.info(f"[HOT] Parsed chain: {chain}")
+                return self._run_cc("chain", chain)
 
         # ── Fallback: treat as a prompt to Cowork ──
         log.info("[?] No specific command matched — sending as Cowork prompt")
