@@ -180,6 +180,8 @@ class CommandRouter:
     def __init__(self):
         self.custom_commands = self._load_custom_commands()
         self.cc_py = CONFIG.get("cc_py_path", r"C:\Users\tobia\Desktop\ClaudeBridge\skills\cc.py")
+        self._commands_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
+        self._commands_mtime = self._get_mtime()
         self.handlers = {
             "open_cowork": self.open_cowork,
             "open_terminal": self.open_terminal,
@@ -191,9 +193,29 @@ class CommandRouter:
             "search_web": self.search_web,
             "focus_window": self.focus_window,
         }
+        # For voice-based command creation (multi-step state)
+        self._creating_command = False
+        self._new_cmd_data = {}
+
+    def _get_mtime(self):
+        try:
+            return self._commands_path.stat().st_mtime
+        except Exception:
+            return 0
+
+    def _hot_reload_if_changed(self):
+        """Auto-reload commands if the JSON file was modified on disk."""
+        current_mtime = self._get_mtime()
+        if current_mtime != self._commands_mtime:
+            self._commands_mtime = current_mtime
+            self.custom_commands = self._load_custom_commands()
+            log.info("[HOT] Commands auto-reloaded (file changed on disk)")
 
     def _load_custom_commands(self):
-        custom_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
+        if self._commands_path.exists() if hasattr(self, '_commands_path') else False:
+            custom_path = self._commands_path
+        else:
+            custom_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
         if custom_path.exists():
             with open(custom_path, "r") as f:
                 return json.load(f)
@@ -202,15 +224,24 @@ class CommandRouter:
     def reload_commands(self):
         """Hot-reload custom commands from disk."""
         self.custom_commands = self._load_custom_commands()
+        self._commands_mtime = self._get_mtime()
         log.info("[OK] Custom commands reloaded")
 
     def _run_cc(self, *args):
-        """Run cc.py directly via Python subprocess (no PowerShell needed)."""
-        cmd_list = [sys.executable, self.cc_py] + list(args)
-        log.info(f"[CMD] Running: python cc.py {' '.join(args)}")
+        """Run cc.py via cmd.exe shell to preserve quoted chain arguments."""
+        # Build command string — quote the chain arg so cmd.exe keeps it as one piece
+        arg_parts = []
+        for a in args:
+            if " " in a or ";" in a:
+                arg_parts.append(f'"{a}"')
+            else:
+                arg_parts.append(a)
+        cmd_str = f'"{sys.executable}" "{self.cc_py}" {" ".join(arg_parts)}'
+        log.info(f"[CMD] Running: cc.py {' '.join(arg_parts)}")
         try:
             result = subprocess.run(
-                cmd_list,
+                cmd_str,
+                shell=True,
                 capture_output=True,
                 text=True,
                 timeout=CONFIG.get("command_timeout", 30)
@@ -235,16 +266,32 @@ class CommandRouter:
         if not text:
             return {"status": "empty", "message": "No speech detected"}
 
+        # Auto hot-reload: check if commands file changed on disk
+        self._hot_reload_if_changed()
+
         text_lower = text.lower().strip()
         log.info(f"[>>] Routing command: \"{text_lower}\"")
+
+        # ── Voice command creation flow (multi-step) ──
+        if self._creating_command:
+            return self._voice_create_step(text)
 
         # ── Meta commands ──
         if any(text_lower.startswith(p) for p in ["reload commands", "refresh commands"]):
             self.reload_commands()
             return {"status": "ok", "action": "reload_commands"}
 
-        if any(text_lower.startswith(p) for p in ["add command", "new command", "create command"]):
-            return self._handle_add_command(text_lower)
+        # Open the GUI command manager
+        if any(text_lower.startswith(p) for p in [
+            "open command manager", "command manager", "open commands",
+            "manage commands", "open manager", "launch command manager"]):
+            return self._open_command_manager()
+
+        # Voice command creation
+        if any(text_lower.startswith(p) for p in [
+            "add command", "new command", "create command",
+            "add a command", "create a command", "new voice command"]):
+            return self._start_voice_create(text_lower)
 
         if any(text_lower.startswith(p) for p in ["list commands", "show commands", "what commands"]):
             return self._list_commands()
@@ -386,15 +433,104 @@ class CommandRouter:
 
     # ─── Custom Command Management ──────────────────────────────────────
 
-    def _handle_add_command(self, text: str):
-        """Parse 'add command [name] triggers [t1,t2] action [action]'."""
-        log.info(f"[+] Adding custom command from voice: {text}")
-        # Simple parsing - for complex commands, use the command editor
+    def _open_command_manager(self):
+        """Launch the GUI command manager."""
+        log.info("[GUI] Opening Command Manager...")
+        gui_path = BASE_DIR / "jarvis_gui.py"
+        subprocess.Popen([sys.executable, str(gui_path)],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+        return {"status": "ok", "action": "open_command_manager"}
+
+    def _start_voice_create(self, text: str):
+        """Start the multi-step voice command creation flow."""
+        log.info("[+] Starting voice command creation...")
+        log.info("    Say the COMMAND NAME after the beep")
+        self._creating_command = True
+        self._new_cmd_data = {"step": "name"}
         return {
-            "status": "info",
-            "message": "To add custom commands, edit commands/custom_commands.json "
-                       "or use the Jarvis Command Manager (jarvis_manager.py)"
+            "status": "listening",
+            "action": "voice_create",
+            "message": "Say the command name now"
         }
+
+    def _voice_create_step(self, text: str):
+        """Handle each step of voice command creation."""
+        step = self._new_cmd_data.get("step", "name")
+
+        if text.lower().strip() in ["cancel", "stop", "nevermind", "never mind"]:
+            self._creating_command = False
+            self._new_cmd_data = {}
+            log.info("[X] Command creation cancelled")
+            return {"status": "cancelled", "action": "voice_create"}
+
+        if step == "name":
+            self._new_cmd_data["name"] = text.strip()
+            self._new_cmd_data["step"] = "trigger"
+            log.info(f"[+] Name: '{text.strip()}'")
+            log.info("    Now say the TRIGGER PHRASE (what you'll say to activate it)")
+            return {"status": "listening", "step": "trigger",
+                    "message": f"Name set to '{text.strip()}'. Now say the trigger phrase."}
+
+        elif step == "trigger":
+            self._new_cmd_data["trigger"] = text.strip().lower()
+            self._new_cmd_data["step"] = "action"
+            log.info(f"[+] Trigger: '{text.strip()}'")
+            log.info("    Now say the ACTION: 'prompt cowork', 'prompt claude code',")
+            log.info("    'open cowork', 'screenshot', 'type text', or 'chain' + description")
+            return {"status": "listening", "step": "action",
+                    "message": f"Trigger set to '{text.strip()}'. Now say the action type."}
+
+        elif step == "action":
+            action_text = text.strip().lower()
+            # Map spoken action to handler name
+            action_map = {
+                "prompt cowork": "prompt_cowork",
+                "prompt claude code": "prompt_claude_code",
+                "open cowork": "open_cowork",
+                "open terminal": "open_terminal",
+                "screenshot": "screenshot",
+                "type text": "type_text",
+                "type": "type_text",
+                "search": "search_web",
+                "search web": "search_web",
+                "focus window": "focus_window",
+                "focus": "focus_window",
+            }
+
+            action = action_map.get(action_text, action_text)
+            # If it starts with "chain", treat the rest as a chain command
+            if action_text.startswith("chain"):
+                chain_desc = action_text[5:].strip()
+                if chain_desc:
+                    action = f"chain:{chain_desc}"
+                else:
+                    action = "chain:"
+
+            # Build and save the command
+            new_cmd = {
+                "name": self._new_cmd_data["name"],
+                "triggers": [self._new_cmd_data["trigger"]],
+                "action": action,
+                "description": f"Voice-created command"
+            }
+
+            self.custom_commands.setdefault("commands", []).append(new_cmd)
+            commands_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
+            with open(commands_path, "w") as f:
+                json.dump(self.custom_commands, f, indent=4)
+
+            self._creating_command = False
+            self._new_cmd_data = {}
+
+            log.info(f"[OK] Command created! Name: '{new_cmd['name']}', "
+                     f"Trigger: '{new_cmd['triggers'][0]}', Action: '{action}'")
+            log.info("     Command is live immediately - no restart needed!")
+
+            return {"status": "ok", "action": "voice_create_complete", "command": new_cmd}
+
+        # Shouldn't get here
+        self._creating_command = False
+        return {"status": "error", "message": "Unknown creation step"}
 
     def _list_commands(self):
         """List all available commands."""
@@ -403,6 +539,7 @@ class CommandRouter:
             "open cowork convo [name]", "prompt cowork [text]",
             "prompt claude code [text]", "type [text]",
             "search [query]", "focus [window]",
+            "open command manager", "add command (voice)",
             "reload commands", "list commands",
             "stop / quit / exit"
         ]
