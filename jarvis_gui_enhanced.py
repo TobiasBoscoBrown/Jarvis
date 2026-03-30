@@ -31,12 +31,12 @@ import struct
 # Import Jarvis components for voice integration
 try:
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-    from jarvis_core import WhisperTranscriber, HAS_OPENAI, whisper_client
+    from jarvis_core import LocalSpeechTranscriber, HAS_LOCAL_SPEECH, HAS_OPENAI_WHISPER
     from jarvis_core import TOKEN_STATS, log_tokens, count_tokens
 except ImportError:
     print("[!] Warning: Jarvis components not available")
-    HAS_OPENAI = False
-    whisper_client = None
+    HAS_LOCAL_SPEECH = False
+    HAS_OPENAI_WHISPER = False
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -213,7 +213,7 @@ class EnhancedJarvisGUI(tk.Tk):
         self.data = load_commands()
         self.selected_index = None
         self.voice_recorder = None
-        self.transcriber = WhisperTranscriber() if HAS_OPENAI else None
+        self.transcriber = LocalSpeechTranscriber() if HAS_LOCAL_SPEECH or HAS_OPENAI_WHISPER else None
         
         # Status tracking
         self.status_queue = queue.Queue()
@@ -590,9 +590,9 @@ class EnhancedJarvisGUI(tk.Tk):
 
     def _voice_command(self):
         """Create command using voice input."""
-        if not HAS_OPENAI or not whisper_client:
+        if not (HAS_LOCAL_SPEECH or HAS_OPENAI_WHISPER):
             messagebox.showwarning("Voice Not Available", 
-                                  "Voice transcription requires OpenAI API key in config.json")
+                                  "Voice transcription requires local speech recognition or OpenAI API key")
             return
             
         dialog = VoiceCommandDialog(self, self._on_voice_complete)
@@ -848,10 +848,13 @@ class VoiceCommandDialog(tk.Toplevel):
         self.status_label.config(text="Processing...")
 
     def _transcribe_audio(self, audio_path):
-        """Transcribe audio using Whisper."""
+        """Transcribe audio using local or API speech recognition."""
         try:
-            transcriber = WhisperTranscriber()
-            text = transcriber.transcribe(Path(audio_path))
+            if self.transcriber:
+                text = self.transcriber.transcribe(Path(audio_path))
+            else:
+                # Fallback to simple transcription
+                text = "Voice command recorded"
             
             # Clean up temp file
             try:

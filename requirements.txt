@@ -4,3 +4,9 @@ openai>=1.0.0
 numpy
 onnxruntime
 edge-tts>=6.1.0
+# Local speech recognition
+faster-whisper
+vosk
+SpeechRecognition
+# Audio processing
+pydub

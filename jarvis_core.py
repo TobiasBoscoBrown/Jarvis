@@ -205,28 +205,60 @@ logging.basicConfig(
 )
 log = logging.getLogger("Jarvis")
 
-# OpenAI client for Whisper (still needed for transcription)
-whisper_client = None
-if CONFIG.get("openai_api_key"):
-    try:
-        from openai import OpenAI
-        whisper_client = OpenAI(api_key=CONFIG["openai_api_key"])
-    except ImportError:
-        print("[!] openai package not found for Whisper. Run: pip install openai")
-        whisper_client = None
-else:
-    whisper_client = None
+# Import local speech recognition
+try:
+    from local_speech import LocalTranscriber
+    HAS_LOCAL_SPEECH = True
+    print("[OK] Local speech recognition available")
+except ImportError:
+    print("[!] Local speech recognition not found")
+    HAS_LOCAL_SPEECH = False
 
-# OpenAI client for GPT-4o-mini fallback (uses existing key)
+# Fallback to OpenAI Whisper API
+try:
+    from openai import OpenAI
+    whisper_client = OpenAI(api_key=CONFIG.get("openai_api_key"))
+    HAS_OPENAI_WHISPER = True
+    print("[OK] OpenAI Whisper API available")
+except ImportError:
+    print("[!] openai package not found")
+    HAS_OPENAI_WHISPER = False
+except Exception:
+    print("[!] OpenAI API key not configured")
+    HAS_OPENAI_WHISPER = False
+
+# Claude API fallback (secondary method)
+try:
+    import anthropic
+    HAS_CLAUDE_API = True
+    print("[OK] Claude API available")
+except ImportError:
+    print("[!] anthropic package not found")
+    HAS_CLAUDE_API = False
+
+# Claude API client initialization
+if HAS_CLAUDE_API and CONFIG.get("claude_api_key"):
+    try:
+        claude_client = anthropic.Anthropic(api_key=CONFIG["claude_api_key"])
+        print("[OK] Claude API initialized")
+    except Exception as e:
+        print(f"[!] Failed to initialize Claude API: {e}")
+        claude_client = None
+elif HAS_CLAUDE_API:
+    print("[!] Claude API key not configured")
+    claude_client = None
+
+# OpenAI client for GPT-4o-mini fallback (final method)
 if HAS_OPENAI_FALLBACK and CONFIG.get("openai_api_key"):
     try:
         openai_fallback_client = openai.OpenAI(api_key=CONFIG["openai_api_key"])
-        print("[OK] OpenAI GPT-4o-mini initialized (fallback)")
+        print("[OK] OpenAI GPT-4o-mini initialized (final fallback)")
     except Exception as e:
         print(f"[!] Failed to initialize OpenAI fallback: {e}")
         openai_fallback_client = None
 elif HAS_OPENAI_FALLBACK:
-    print("[!] OpenAI API key not configured for fallback")
+    print("[!] OpenAI API key not configured")
+    openai_fallback_client = None
 
 # ─── Audio Recording ─────────────────────────────────────────────────────────
 
@@ -309,18 +341,83 @@ class AudioRecorder:
 
 # ─── Whisper Transcription ───────────────────────────────────────────────────
 
-class WhisperTranscriber:
-    """Transcribes audio using OpenAI Whisper API."""
+class LocalSpeechTranscriber:
+    """Local speech transcription using multiple engines."""
 
-    def __init__(self):
-        self.model = CONFIG.get("whisper_model", "whisper-1")
+    def __init__(self, preferred_engine: str = "faster_whisper", model_size: str = "base"):
+        self.preferred_engine = preferred_engine
+        self.model_size = model_size
+        self.transcriber = None
+        self.logger = log
+        
+        if HAS_LOCAL_SPEECH:
+            try:
+                self.transcriber = LocalTranscriber(preferred_engine, model_size)
+                info = self.transcriber.get_engine_info()
+                self.logger.info(f"[LOCAL] Using {info['current_engine']} with model size {info['model_size']}")
+            except Exception as e:
+                self.logger.error(f"[LOCAL] Failed to initialize local transcriber: {e}")
+                self.transcriber = None
+        
+        # Fallback to OpenAI API
+        self.use_api_fallback = not HAS_LOCAL_SPEECH or self.transcriber is None
+        if self.use_api_fallback and HAS_OPENAI_WHISPER:
+            self.logger.info("[LOCAL] Falling back to OpenAI Whisper API")
+        elif self.use_api_fallback:
+            self.logger.error("[LOCAL] No speech recognition available!")
 
     def transcribe(self, audio_path: Path) -> str:
-        """Send audio to Whisper API, return transcription text."""
-        log.info(f"[AI] Transcribing with {self.model}...")
-        if not whisper_client:
-            log.error("Whisper client not available")
+        """Transcribe audio file using local or API method."""
+        if self.transcriber and not self.use_api_fallback:
+            return self._transcribe_local(audio_path)
+        elif HAS_OPENAI_WHISPER:
+            return self._transcribe_api(audio_path)
+        else:
+            self.logger.error("[LOCAL] No transcription method available")
             return ""
+    
+    def _transcribe_local(self, audio_path: Path) -> str:
+        """Transcribe using local engine."""
+        try:
+            # Calculate audio duration for token tracking
+            import wave
+            with wave.open(str(audio_path), 'rb') as wav_file:
+                frames = wav_file.getnframes()
+                framerate = wav_file.getframerate()
+                duration_seconds = frames / framerate
+                duration_minutes = duration_seconds / 60
+            
+            # Transcribe with fallback
+            results = self.transcriber.transcribe_file_with_fallback(audio_path)
+            
+            # Find the best result
+            best_result = None
+            for engine, result in results.items():
+                if result["success"] and result["text"].strip():
+                    best_result = result
+                    break
+            
+            if best_result:
+                text = best_result["text"].strip()
+                engine_used = best_result["engine"]
+                
+                # Log local usage (no cost)
+                log.info(f"[LOCAL] {engine_used}: '{text[:100]}{'...' if len(text) > 100 else ''}'")
+                
+                return text
+            else:
+                self.logger.warning("[LOCAL] All engines failed")
+                return ""
+                
+        except Exception as e:
+            self.logger.error(f"[LOCAL] Local transcription failed: {e}")
+            # Fallback to API if available
+            if HAS_OPENAI_WHISPER:
+                return self._transcribe_api(audio_path)
+            return ""
+    
+    def _transcribe_api(self, audio_path: Path) -> str:
+        """Transcribe using OpenAI Whisper API (fallback)."""
         try:
             # Calculate audio duration for token tracking
             import wave
@@ -332,19 +429,19 @@ class WhisperTranscriber:
             
             with open(audio_path, "rb") as audio_file:
                 response = whisper_client.audio.transcriptions.create(
-                    model=self.model,
+                    model="whisper-1",
                     file=audio_file,
                     language="en"
                 )
             text = response.text.strip()
             
-            # Log Whisper usage
+            # Log API usage
             log_tokens("whisper", minutes=duration_minutes)
             
-            log.info(f"[TXT] Transcription: \"{text}\"")
+            log.info(f"[API] Transcription: \"{text}\"")
             return text
         except Exception as e:
-            log.error(f"Whisper API error: {e}")
+            self.logger.error(f"[API] Whisper API error: {e}")
             return ""
 
 
@@ -884,7 +981,7 @@ class CommandRouter:
         return {"status": "ok", "action": "claude_brain", "prompt": text}
 
     def _ask_claude(self, user_text: str):
-        """Send user speech to Claude SDK with Gemini fallback. Runs in background thread."""
+        """Send user speech to Claude SDK with Claude API and GPT-4o-mini fallbacks. Runs in background thread."""
         def _run():
             try:
                 now = datetime.now()
@@ -903,11 +1000,21 @@ class CommandRouter:
                         elif attempt == 0:
                             log.info(f"[BRAIN] Claude SDK attempt 1 failed, retrying...")
                             time.sleep(1)  # Brief delay before retry
-                    log.warning("[BRAIN] Claude SDK failed after 2 attempts, trying fallback...")
+                    log.warning("[BRAIN] Claude SDK failed after 2 attempts, trying Claude API...")
                 
-                # Fallback to OpenAI GPT-4o-mini (cheap, uses existing key)
+                # Fallback to Claude API (secondary)
+                if HAS_CLAUDE_API and claude_client:
+                    log.info(f"[BRAIN] Using Claude API fallback...")
+                    response_text = self._try_claude_api(user_text, system_prompt)
+                    if response_text:
+                        self._handle_response(response_text)
+                        return
+                    else:
+                        log.warning("[BRAIN] Claude API fallback failed, trying GPT-4o-mini...")
+                
+                # Final fallback to OpenAI GPT-4o-mini (cheapest)
                 if HAS_OPENAI_FALLBACK and openai_fallback_client:
-                    log.info(f"[BRAIN] Using GPT-4o-mini fallback...")
+                    log.info(f"[BRAIN] Using GPT-4o-mini final fallback...")
                     response_text = self._try_openai_fallback(user_text, system_prompt)
                     if response_text:
                         self._handle_response(response_text)
@@ -979,6 +1086,35 @@ class CommandRouter:
             
         except Exception as e:
             log.debug(f"[BRAIN] Claude SDK error: {e}")
+            return ""
+    
+    def _try_claude_api(self, user_text: str, system_prompt: str) -> str:
+        """Try Claude API (secondary fallback)."""
+        try:
+            # Count input tokens
+            input_text = f"{system_prompt}\n\n{user_text}"
+            input_tokens = count_tokens(input_text, "claude-3-sonnet")
+            
+            response = claude_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=500,
+                temperature=0.7,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_text}
+                ]
+            )
+            
+            response_text = response.content[0].text.strip()
+            
+            # Count output tokens and log usage
+            output_tokens = count_tokens(response_text, "claude-3-sonnet")
+            log_tokens("claude_api", input_tokens, output_tokens)
+            
+            return response_text
+            
+        except Exception as e:
+            log.debug(f"[BRAIN] Claude API error: {e}")
             return ""
     
     def _try_openai_fallback(self, user_text: str, system_prompt: str) -> str:
@@ -1243,7 +1379,7 @@ class Jarvis:
 
     def __init__(self):
         self.recorder = AudioRecorder(sample_rate=self.OWW_SAMPLE_RATE)
-        self.transcriber = WhisperTranscriber()
+        self.transcriber = LocalSpeechTranscriber()
         self.tts = JarvisTTS()
         self.router = CommandRouter(tts=self.tts)
         self.running = False
