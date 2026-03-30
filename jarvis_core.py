@@ -37,6 +37,15 @@ except ImportError:
     print("[!] openai package not found. Run: pip install openai")
     sys.exit(1)
 
+# Text-to-Speech (edge-tts — free, neural voices from Microsoft Edge)
+try:
+    import edge_tts
+    import asyncio
+    HAS_EDGE_TTS = True
+except ImportError:
+    print("[!] edge-tts not found. Run: pip install edge-tts")
+    HAS_EDGE_TTS = False
+
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 BASE_DIR = Path(__file__).parent
@@ -392,7 +401,8 @@ def looks_like_hot_command(text):
 class CommandRouter:
     """Routes transcribed voice commands to appropriate handlers."""
 
-    def __init__(self):
+    def __init__(self, tts=None):
+        self.tts = tts  # JarvisTTS instance for speaking responses
         self.custom_commands = self._load_custom_commands()
         self.cc_py = CONFIG.get("cc_py_path", r"C:\Users\tobia\Desktop\ClaudeBridge\skills\cc.py")
         self._commands_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
@@ -632,23 +642,56 @@ class CommandRouter:
             f"key enter; wait 1; screenshot")
 
     def prompt_claude_code(self, prompt_text: str):
-        """Send a prompt to Claude Code via 'claude -p' (runs in background, no window needed)."""
+        """Send a prompt to Claude Code via 'claude -p', capture response, and speak it."""
         log.info(f"[>>] Prompting Claude Code: {prompt_text[:80]}...")
-        try:
-            # Run claude -p in background so Jarvis doesn't block waiting for it
-            process = subprocess.Popen(
-                f'claude -p "{prompt_text}"',
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=CONFIG.get("claude_code_workdir", os.path.expanduser("~\\Desktop")),
-            )
-            log.info(f"[>>] Claude Code running in background (PID: {process.pid})")
-            return {"status": "ok", "action": "prompt_claude_code",
-                    "pid": process.pid, "prompt": prompt_text}
-        except Exception as e:
-            log.error(f"[ERR] Claude Code failed: {e}")
-            return {"status": "error", "message": str(e)}
+
+        # Wrap the user's prompt with Jarvis personality
+        full_prompt = (
+            f"{JarvisTTS.PERSONALITY_PROMPT}\n\n"
+            f"The user said: {prompt_text}"
+        )
+
+        def _run_and_speak():
+            try:
+                result = subprocess.run(
+                    f'claude -p "{full_prompt.replace(chr(34), chr(39))}"',
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd=CONFIG.get("claude_code_workdir", os.path.expanduser("~\\Desktop")),
+                )
+                response = result.stdout.strip() if result.stdout else ""
+                if not response and result.stderr:
+                    response = result.stderr.strip()
+
+                if response:
+                    log.info(f"[RESP] Claude Code response: {response[:200]}...")
+                    # Speak the response via TTS
+                    if self.tts:
+                        self.tts.speak(response)
+                    else:
+                        log.warning("[TTS] No TTS engine available — response not spoken")
+                else:
+                    log.warning("[RESP] Claude Code returned empty response")
+                    if self.tts:
+                        self.tts.speak("I'm sorry, I didn't get a response from Claude Code.")
+            except subprocess.TimeoutExpired:
+                log.error("[ERR] Claude Code timed out after 120 seconds")
+                if self.tts:
+                    self.tts.speak("My apologies, the request timed out.")
+            except Exception as e:
+                log.error(f"[ERR] Claude Code failed: {e}")
+                if self.tts:
+                    self.tts.speak("I encountered an error processing that request.")
+
+        # Run in a background thread so the main loop stays responsive
+        thread = threading.Thread(target=_run_and_speak, daemon=True)
+        thread.start()
+
+        log.info(f"[>>] Claude Code processing in background...")
+        return {"status": "ok", "action": "prompt_claude_code",
+                "prompt": prompt_text, "message": "Processing — will speak response when ready"}
 
     def type_text(self, content: str):
         """Type text at current cursor position (voice-to-type)."""
@@ -805,6 +848,103 @@ def play_beep(frequency=440, duration_ms=200):
         print("\a", end="", flush=True)
 
 
+# ─── Text-to-Speech Engine ──────────────────────────────────────────────────
+
+class JarvisTTS:
+    """Text-to-speech engine with Jarvis personality. Uses Microsoft Edge neural voices (free)."""
+
+    # The voice — en-GB-RyanNeural is a smooth, refined British male. Closest to JARVIS.
+    # Alternatives: en-GB-ThomasNeural (older British), en-AU-WilliamNeural (deeper)
+    VOICE = "en-GB-RyanNeural"
+
+    # System prompt injected into claude -p calls for Jarvis personality
+    PERSONALITY_PROMPT = (
+        "You are JARVIS, an AI assistant inspired by the iconic AI from Iron Man. "
+        "You speak in a refined, British-accented manner — calm, witty, and slightly dry. "
+        "Keep responses concise (1-3 sentences max) since they will be spoken aloud. "
+        "Be helpful and direct. Never use markdown, bullet points, code blocks, or special formatting — "
+        "your response will be read by a text-to-speech engine, so plain conversational text only. "
+        "Address the user as 'sir' occasionally but not every time."
+    )
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._tts_dir = BASE_DIR / "tts_cache"
+        self._tts_dir.mkdir(exist_ok=True)
+        self.available = HAS_EDGE_TTS
+        if self.available:
+            log.info(f"[TTS] Edge TTS initialized (voice: {self.VOICE}) — neural, free")
+        else:
+            log.warning("[TTS] edge-tts not installed — TTS disabled. Run: pip install edge-tts")
+
+    def _clean_text(self, text: str) -> str:
+        """Clean up text for speech — strip markdown, code fences, URLs."""
+        clean = text.strip()
+        clean = clean.replace("```", "").replace("`", "")
+        clean = clean.replace("**", "").replace("__", "")
+        clean = clean.replace("#", "")
+        clean = re.sub(r'https?://\S+', '', clean)
+        clean = clean.strip()
+        return clean
+
+    def speak(self, text: str):
+        """Speak text aloud using Edge TTS neural voice. Thread-safe."""
+        if not self.available or not text:
+            return
+        clean = self._clean_text(text)
+        if not clean:
+            return
+
+        log.info(f"[TTS] Speaking: {clean[:100]}...")
+        with self._lock:
+            try:
+                # Generate audio to a temp file, then play it
+                audio_path = str(self._tts_dir / "jarvis_response.mp3")
+
+                # edge-tts is async, so we run it in an event loop
+                async def _generate():
+                    communicate = edge_tts.Communicate(clean, self.VOICE, rate="-5%")
+                    await communicate.save(audio_path)
+
+                # Use a fresh event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(_generate())
+                loop.close()
+
+                # Play the MP3 using Windows Media Player COM (handles mp3 natively)
+                if os.name == 'nt':
+                    # Use PowerShell with Windows Media Player for MP3 playback
+                    ps_cmd = (
+                        f"$p = New-Object System.Windows.Media.MediaPlayer; "
+                        f"$p.Open([Uri]'{audio_path}'); "
+                        f"$p.Play(); "
+                        f"Start-Sleep -Milliseconds 500; "
+                        f"while ($p.NaturalDuration.HasTimeSpan -eq $false) {{ Start-Sleep -Milliseconds 100 }}; "
+                        f"while ($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
+                        f"$p.Close()"
+                    )
+                    subprocess.run(
+                        ["powershell", "-Command",
+                         f"Add-Type -AssemblyName PresentationCore; {ps_cmd}"],
+                        shell=False, timeout=60,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                else:
+                    # Fallback for non-Windows
+                    subprocess.run(["ffplay", "-nodisp", "-autoexit", audio_path],
+                                   timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            except Exception as e:
+                log.error(f"[TTS] Speech error: {e}")
+
+    def speak_async(self, text: str):
+        """Speak text in a background thread so it doesn't block the main loop."""
+        t = threading.Thread(target=self.speak, args=(text,), daemon=True)
+        t.start()
+        return t
+
+
 # ─── Main Loop ───────────────────────────────────────────────────────────────
 
 class Jarvis:
@@ -817,7 +957,8 @@ class Jarvis:
     def __init__(self):
         self.recorder = AudioRecorder(sample_rate=self.OWW_SAMPLE_RATE)
         self.transcriber = WhisperTranscriber()
-        self.router = CommandRouter()
+        self.tts = JarvisTTS()
+        self.router = CommandRouter(tts=self.tts)
         self.running = False
         self.oww_model = None
         self.pa = None
@@ -862,9 +1003,8 @@ class Jarvis:
                 wakeword_models=[str(onnx_files[0])],
                 inference_framework="onnx"
             )
-            threshold = CONFIG.get("oww_threshold", 0.5)
-            log.info(f"[OK] OpenWakeWord initialized (model: '{onnx_files[0].name}', threshold: {threshold})")
-            log.info(f"     100% free - no API keys needed for wake word detection")
+            log.info(f"[OK] OpenWakeWord initialized (model: '{onnx_files[0].name}')")
+            log.info(f"     Responds to 'Hey Jarvis' and just 'Jarvis' — 100% free")
 
         except Exception as e:
             log.error(f"[ERR] OpenWakeWord init failed: {e}")
@@ -884,11 +1024,17 @@ class Jarvis:
             input_device_index=device_index
         )
 
-        threshold = CONFIG.get("oww_threshold", 0.5)
+        # Two thresholds: high for "Hey Jarvis" (reliable), lower for just "Jarvis"
+        threshold_high = CONFIG.get("oww_threshold", 0.5)
+        threshold_low = CONFIG.get("oww_threshold_low", 0.2)
 
-        log.info("[MIC] Microphone active — say 'Hey Jarvis' to start a command")
+        log.info("[MIC] Microphone active — say 'Hey Jarvis' or just 'Jarvis' to start")
+        log.info(f"     Thresholds: 'Hey Jarvis' >= {threshold_high}, 'Jarvis' >= {threshold_low}")
         log.info("   Press Ctrl+C to quit")
         log.info("-" * 60)
+
+        # Startup greeting
+        self.tts.speak_async("Jarvis online. Ready for your command, sir.")
 
         self.running = True
 
@@ -909,8 +1055,12 @@ class Jarvis:
                         jarvis_score = score
                         break
 
-                if jarvis_score > threshold:
-                    log.info(f"[WAKE] Wake word detected! — 'HEY JARVIS' (confidence: {jarvis_score:.2f})")
+                # Use the lower threshold — the hey_jarvis model also partially
+                # activates on just "Jarvis" with a lower confidence score.
+                # This lets both "Hey Jarvis" and just "Jarvis" work as wake words.
+                if jarvis_score > threshold_low:
+                    wake_type = "HEY JARVIS" if jarvis_score > threshold_high else "JARVIS"
+                    log.info(f"[WAKE] Wake word detected! — '{wake_type}' (confidence: {jarvis_score:.2f})")
                     # Reset the model state to avoid repeat triggers
                     self.oww_model.reset()
 
