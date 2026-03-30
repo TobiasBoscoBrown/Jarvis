@@ -205,15 +205,12 @@ class CommandRouter:
         log.info("[OK] Custom commands reloaded")
 
     def _run_cc(self, *args):
-        """Run cc.py with given arguments via PowerShell."""
-        cmd_parts = ['python', f'"{self.cc_py}"'] + list(args)
-        cmd_str = ' '.join(cmd_parts)
-        full_cmd = f"powershell -Command \"{cmd_str}\""
-        log.info(f"[CMD] Running: {cmd_str}")
+        """Run cc.py directly via Python subprocess (no PowerShell needed)."""
+        cmd_list = [sys.executable, self.cc_py] + list(args)
+        log.info(f"[CMD] Running: python cc.py {' '.join(args)}")
         try:
             result = subprocess.run(
-                full_cmd,
-                shell=True,
+                cmd_list,
                 capture_output=True,
                 text=True,
                 timeout=CONFIG.get("command_timeout", 30)
@@ -330,13 +327,13 @@ class CommandRouter:
         """Open Claude Cowork in browser."""
         log.info("[WEB] Opening Claude Cowork...")
         return self._run_cc("chain",
-            '"launch https://claude.ai; wait 3; screenshot"')
+            "launch https://claude.ai; wait 3; screenshot")
 
     def open_terminal(self, *args):
         """Open Windows Terminal."""
         log.info("[SYS] Opening Terminal...")
         return self._run_cc("chain",
-            '"launch wt.exe; wait 2; screenshot"')
+            "launch wt.exe; wait 2; screenshot")
 
     def take_screenshot(self, *args):
         """Take a screenshot."""
@@ -346,52 +343,46 @@ class CommandRouter:
     def open_cowork_conversation(self, convo_name: str):
         """Open a specific Cowork conversation by name."""
         log.info(f"[NAV] Opening Cowork conversation: {convo_name}")
-        # Focus browser, go to claude.ai, search for conversation
         return self._run_cc("chain",
-            f'"launch https://claude.ai; wait 3; '
-            f'click_text Search --window Chrome; wait 0.5; '
-            f'type {convo_name}; wait 1; screenshot"')
+            f"launch https://claude.ai; wait 3; "
+            f"click_text Search --window Chrome; wait 0.5; "
+            f"type {convo_name}; wait 1; screenshot")
 
     def prompt_cowork(self, prompt_text: str):
         """Type a prompt into Claude Cowork."""
         log.info(f"[>>] Prompting Cowork: {prompt_text[:80]}...")
-        # Focus Cowork window, find the input area, type the prompt, send
-        safe_text = prompt_text.replace('"', '\\"')
         return self._run_cc("chain",
-            f'"focus Claude; wait 0.5; '
-            f'click 960 900; wait 0.3; '
-            f'type {safe_text}; wait 0.3; '
-            f'key enter; wait 1; screenshot"')
+            f"focus Claude; wait 0.5; "
+            f"click 960 900; wait 0.3; "
+            f"type {prompt_text}; wait 0.3; "
+            f"key enter; wait 1; screenshot")
 
     def prompt_claude_code(self, prompt_text: str):
         """Send a command to Claude Code in the terminal."""
         log.info(f"[>>] Prompting Claude Code: {prompt_text[:80]}...")
         terminal_title = CONFIG.get("claude_code_terminal", "Windows Terminal")
-        safe_text = prompt_text.replace('"', '\\"')
         return self._run_cc("chain",
-            f'"focus {terminal_title}; wait 0.5; '
-            f'type {safe_text}; wait 0.3; '
-            f'key enter; wait 1; screenshot"')
+            f"focus {terminal_title}; wait 0.5; "
+            f"type {prompt_text}; wait 0.3; "
+            f"key enter; wait 1; screenshot")
 
     def type_text(self, content: str):
         """Type text at current cursor position (voice-to-type)."""
         log.info(f"[KEY] Typing: {content[:60]}...")
-        safe_text = content.replace('"', '\\"')
-        return self._run_cc("type", f'"{safe_text}"')
+        return self._run_cc("type", content)
 
     def search_web(self, query: str):
         """Open browser and search for something."""
         log.info(f"[WEB] Searching: {query}")
-        safe_query = query.replace('"', '\\"')
         return self._run_cc("chain",
-            f'"focus Chrome; wait 0.5; key ctrl+l; wait 0.2; '
-            f'type https://www.google.com/search?q={safe_query}; '
-            f'key enter; wait 3; screenshot"')
+            f"focus Chrome; wait 0.5; key ctrl+l; wait 0.2; "
+            f"type https://www.google.com/search?q={query}; "
+            f"key enter; wait 3; screenshot")
 
     def focus_window(self, window_name: str):
         """Focus/bring a window to foreground."""
         log.info(f"[WIN] Focusing: {window_name}")
-        return self._run_cc("focus", f'"{window_name}"')
+        return self._run_cc("focus", window_name)
 
     # ─── Custom Command Management ──────────────────────────────────────
 
