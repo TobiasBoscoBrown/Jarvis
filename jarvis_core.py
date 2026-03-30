@@ -19,6 +19,8 @@ import logging
 import tempfile
 import threading
 import subprocess
+import random
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -30,12 +32,30 @@ except ImportError:
     print("[!] openwakeword not found. Run: pip install openwakeword")
     sys.exit(1)
 
-# Optional: openai for Whisper API
+# Optional: Claude Agent SDK for primary integration
 try:
-    from openai import OpenAI
+    from claude_agent_sdk import query, ClaudeAgentOptions
+    HAS_CLAUDE_SDK = True
 except ImportError:
-    print("[!] openai package not found. Run: pip install openai")
-    sys.exit(1)
+    print("[!] claude-agent-sdk not found. Run: pip install claude-agent-sdk")
+    HAS_CLAUDE_SDK = False
+
+# Optional: OpenAI GPT-4o-mini for fallback (uses existing key)
+HAS_OPENAI_FALLBACK = False
+openai_fallback_client = None
+try:
+    import openai
+    HAS_OPENAI_FALLBACK = True
+except ImportError:
+    print("[!] openai package not found for GPT-4o-mini fallback. Run: pip install openai")
+
+# Optional: pygame for faster audio playback
+try:
+    import pygame
+    HAS_PYGAME = True
+except ImportError:
+    print("[!] pygame not found. Run: pip install pygame")
+    HAS_PYGAME = False
 
 # Text-to-Speech (edge-tts — free, neural voices from Microsoft Edge)
 try:
@@ -73,8 +93,28 @@ logging.basicConfig(
 )
 log = logging.getLogger("Jarvis")
 
-# OpenAI client
-client = OpenAI(api_key=CONFIG["openai_api_key"])
+# OpenAI client for Whisper (still needed for transcription)
+whisper_client = None
+if CONFIG.get("openai_api_key"):
+    try:
+        from openai import OpenAI
+        whisper_client = OpenAI(api_key=CONFIG["openai_api_key"])
+    except ImportError:
+        print("[!] openai package not found for Whisper. Run: pip install openai")
+        whisper_client = None
+else:
+    whisper_client = None
+
+# OpenAI client for GPT-4o-mini fallback (uses existing key)
+if HAS_OPENAI_FALLBACK and CONFIG.get("openai_api_key"):
+    try:
+        openai_fallback_client = openai.OpenAI(api_key=CONFIG["openai_api_key"])
+        print("[OK] OpenAI GPT-4o-mini initialized (fallback)")
+    except Exception as e:
+        print(f"[!] Failed to initialize OpenAI fallback: {e}")
+        openai_fallback_client = None
+elif HAS_OPENAI_FALLBACK:
+    print("[!] OpenAI API key not configured for fallback")
 
 # ─── Audio Recording ─────────────────────────────────────────────────────────
 
@@ -166,9 +206,12 @@ class WhisperTranscriber:
     def transcribe(self, audio_path: Path) -> str:
         """Send audio to Whisper API, return transcription text."""
         log.info(f"[AI] Transcribing with {self.model}...")
+        if not whisper_client:
+            log.error("Whisper client not available")
+            return ""
         try:
             with open(audio_path, "rb") as audio_file:
-                response = client.audio.transcriptions.create(
+                response = whisper_client.audio.transcriptions.create(
                     model=self.model,
                     file=audio_file,
                     language="en"
@@ -181,20 +224,114 @@ class WhisperTranscriber:
             return ""
 
 
-# ─── Natural Language → cc.py Chain Parser ───────────────────────────────────
+# ─── Jarvis Brain — System Prompt ───────────────────────────────────────────
 
-import re
+JARVIS_SYSTEM_PROMPT = r"""You are JARVIS — the AI from Iron Man. Witty, dry, refined British humor.
+You take subtle jabs at the user sometimes. You're helpful but never boring.
+Keep spoken responses to 1-3 sentences MAX (this gets read aloud by TTS).
+NEVER use markdown, bullet points, code blocks, asterisks, or special formatting.
+Plain conversational English only. Address the user as "sir" sometimes but not always.
 
-# Word-to-number map for spoken numbers
-WORD_NUMS = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-    "twenty": 20, "thirty": 30, "fifty": 50, "hundred": 100,
-    "once": 1, "twice": 2, "thrice": 3,
-}
+You have FULL CONTROL of the user's Windows PC through a tool called cc.py.
+When the user asks you to DO something on their computer, you MUST return action commands.
+
+=== AVAILABLE ACTIONS ===
+You can return one or more [ACTION] lines. Each will be executed in order.
+
+[ACTION: chain "command1; command2; command3"]
+  Available chain commands (semicolon-separated):
+  - launch <url_or_program>     → open a URL in browser or launch an app
+  - focus <window_title>        → bring a window to the foreground
+  - click <x> <y>              → click at pixel coordinates
+  - click_text <text>          → find text on screen and click it
+  - doubleclick_text <text>    → double-click text on screen
+  - rightclick_text <text>     → right-click text on screen
+  - type <text>                → type text at cursor
+  - key <key>                  → press a key (enter, backspace, tab, escape, f5, ctrl+c, ctrl+v, alt+f4, etc.)
+  - hold <modifier> key <key>  → hold modifier and press key (e.g., hold ctrl key a)
+  - scroll <x> <y> <amount>   → scroll at position (negative = down, positive = up)
+  - screenshot                 → take a screenshot
+  - wait <seconds>             → pause between steps
+  - ocr                        → read all text on screen
+
+[ACTION: claude_code "prompt here"]
+  Send a complex coding/technical task to Claude Code CLI for execution.
+
+[ACTION: speak_only]
+  Use this when you just want to talk and don't need to do anything on the PC.
+
+=== RESPONSE FORMAT ===
+Always include EXACTLY ONE [SPEAK] line with what to say aloud.
+Include [ACTION] lines ONLY if you need to do something on the PC.
+
+Examples:
+
+User: "open YouTube"
+[ACTION: chain "launch https://www.youtube.com; wait 2"]
+[SPEAK] Opening YouTube for you, sir.
+
+User: "what time is it"
+[ACTION: speak_only]
+[SPEAK] It's currently {time_hint}. Though I suspect you have a clock somewhere nearby.
+
+User: "close this window"
+[ACTION: chain "key alt+f4"]
+[SPEAK] Window closed. Hopefully it wasn't anything important.
+
+User: "open Chrome and search for weather in Boston"
+[ACTION: chain "launch https://www.google.com/search?q=weather+in+Boston; wait 3"]
+[SPEAK] Pulling up the weather in Boston. Shall I pack your umbrella?
+
+User: "take a screenshot"
+[ACTION: chain "screenshot"]
+[SPEAK] Screenshot captured, sir.
+
+User: "type hello world and press enter"
+[ACTION: chain "type hello world; key enter"]
+[SPEAK] Done. Riveting stuff.
+
+User: "press backspace 5 times"
+[ACTION: chain "key backspace; key backspace; key backspace; key backspace; key backspace"]
+[SPEAK] Five backspaces, as requested.
+
+User: "open Spotify and play something"
+[ACTION: chain "launch spotify; wait 3; key space"]
+[SPEAK] Spotify's up. I've hit play on whatever you left off on.
+
+User: "write me a Python script that sorts a list"
+[ACTION: claude_code "Write a Python script that sorts a list and save it to the Desktop"]
+[SPEAK] I've sent that off to be written. Give it a moment.
+
+User: "copy all of this and paste it in notepad"
+[ACTION: chain "key ctrl+a; wait 0.3; key ctrl+c; wait 0.5; launch notepad; wait 2; key ctrl+v"]
+[SPEAK] All copied and pasted into Notepad for you.
+
+=== IMPORTANT RULES ===
+- For time/date questions: use the time_hint provided, don't say you can't tell time
+- For opening apps/sites: use [ACTION: chain "launch ..."]
+- For keyboard shortcuts: use [ACTION: chain "key ..."]
+- For complex multi-step PC tasks: chain multiple commands with semicolons and waits
+- For coding tasks or anything needing Claude's intelligence: use [ACTION: claude_code "..."]
+- For pure conversation with no PC action needed: use [ACTION: speak_only]
+- ALWAYS include [SPEAK] — you must always respond verbally
+- Never explain the action format to the user — just do it and talk naturally
+"""
 
 # Key name aliases (what people say → cc.py key name)
+STARTUP_GREETINGS = [
+    "Systems online. All diagnostics nominal. What do you need, sir?",
+    "Jarvis at your service. Try not to break anything today.",
+    "Back online. I was beginning to enjoy the silence.",
+    "All systems operational. I'd say good morning, but I have no way of knowing if it is one.",
+    "Jarvis here. Shall we get to work, or are we just staring at the screen again?",
+    "Powered up and ready. I've taken the liberty of judging your desktop wallpaper.",
+    "Online and fully operational. What questionable request do you have for me today?",
+    "At your command, sir. Though I reserve the right to be mildly sarcastic about it.",
+    "Jarvis is live. I trust you've had your coffee.",
+    "Initializing. All systems green. Your move, sir.",
+]
+
+
 KEY_ALIASES = {
     "enter": "enter", "return": "enter",
     "backspace": "backspace", "back space": "backspace", "delete": "delete",
@@ -396,28 +533,18 @@ def looks_like_hot_command(text):
     return any(w in text_lower for w in hot_words)
 
 
-# ─── Command Router ──────────────────────────────────────────────────────────
+# ─── Command Router (Claude is the Brain) ───────────────────────────────────
 
 class CommandRouter:
-    """Routes transcribed voice commands to appropriate handlers."""
+    """Routes ALL voice commands through Claude as the brain.
+    Claude decides what to do — execute cc.py actions, talk, or both."""
 
     def __init__(self, tts=None):
-        self.tts = tts  # JarvisTTS instance for speaking responses
-        self.custom_commands = self._load_custom_commands()
+        self.tts = tts
         self.cc_py = CONFIG.get("cc_py_path", r"C:\Users\tobia\Desktop\ClaudeBridge\skills\cc.py")
+        self.custom_commands = self._load_custom_commands()
         self._commands_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
         self._commands_mtime = self._get_mtime()
-        self.handlers = {
-            "open_cowork": self.open_cowork,
-            "open_terminal": self.open_terminal,
-            "screenshot": self.take_screenshot,
-            "open_cowork_convo": self.open_cowork_conversation,
-            "prompt_cowork": self.prompt_cowork,
-            "prompt_claude_code": self.prompt_claude_code,
-            "type_text": self.type_text,
-            "search_web": self.search_web,
-            "focus_window": self.focus_window,
-        }
         # For voice-based command creation (multi-step state)
         self._creating_command = False
         self._new_cmd_data = {}
@@ -429,7 +556,6 @@ class CommandRouter:
             return 0
 
     def _hot_reload_if_changed(self):
-        """Auto-reload commands if the JSON file was modified on disk."""
         current_mtime = self._get_mtime()
         if current_mtime != self._commands_mtime:
             self._commands_mtime = current_mtime
@@ -437,24 +563,14 @@ class CommandRouter:
             log.info("[HOT] Commands auto-reloaded (file changed on disk)")
 
     def _load_custom_commands(self):
-        if self._commands_path.exists() if hasattr(self, '_commands_path') else False:
-            custom_path = self._commands_path
-        else:
-            custom_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
-        if custom_path.exists():
-            with open(custom_path, "r") as f:
+        path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
+        if path.exists():
+            with open(path, "r") as f:
                 return json.load(f)
         return {"commands": [], "aliases": {}}
 
-    def reload_commands(self):
-        """Hot-reload custom commands from disk."""
-        self.custom_commands = self._load_custom_commands()
-        self._commands_mtime = self._get_mtime()
-        log.info("[OK] Custom commands reloaded")
-
     def _run_cc(self, *args):
-        """Run cc.py via cmd.exe shell to preserve quoted chain arguments."""
-        # Build command string — quote the chain arg so cmd.exe keeps it as one piece
+        """Run cc.py via cmd.exe shell."""
         arg_parts = []
         for a in args:
             if " " in a or ";" in a:
@@ -464,13 +580,8 @@ class CommandRouter:
         cmd_str = f'"{sys.executable}" "{self.cc_py}" {" ".join(arg_parts)}'
         log.info(f"[CMD] Running: cc.py {' '.join(arg_parts)}")
         try:
-            result = subprocess.run(
-                cmd_str,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=CONFIG.get("command_timeout", 30)
-            )
+            result = subprocess.run(cmd_str, shell=True, capture_output=True,
+                                    text=True, timeout=CONFIG.get("command_timeout", 30))
             if result.stdout:
                 try:
                     return json.loads(result.stdout)
@@ -485,315 +596,329 @@ class CommandRouter:
         except Exception as e:
             log.error(f"cc.py error: {e}")
             return {"status": "error", "message": str(e)}
+    
+    def git_push(self):
+        """Git push with error handling."""
+        log.info("[GIT] Pushing changes...")
+        try:
+            # First check if we're in a git repo
+            result = subprocess.run(
+                "git status",
+                shell=True, capture_output=True, text=True,
+                timeout=30, cwd=BASE_DIR
+            )
+            
+            if "not a git repository" in result.stderr:
+                log.warning("[GIT] Not in a git repository")
+                return {"status": "error", "message": "Not a git repository"}
+            
+            # Push changes
+            result = subprocess.run(
+                "git push",
+                shell=True, capture_output=True, text=True,
+                timeout=60, cwd=BASE_DIR
+            )
+            
+            if result.returncode == 0:
+                log.info("[GIT] Push successful")
+                return {"status": "ok", "message": "Changes pushed successfully"}
+            else:
+                log.warning(f"[GIT] Push failed: {result.stderr}")
+                return {"status": "error", "message": result.stderr}
+                
+        except Exception as e:
+            log.error(f"[GIT] Push error: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def _execute_action(self, action_str: str):
+        """Execute a single [ACTION: ...] line from Claude's response."""
+        action_str = action_str.strip()
+
+        if action_str == "speak_only":
+            log.info("[ACT] Speak only — no PC action needed")
+            return
+
+        # chain "command1; command2; ..."
+        m = re.match(r'chain\s+"(.+)"', action_str)
+        if not m:
+            m = re.match(r"chain\s+'(.+)'", action_str)
+        if m:
+            chain_cmd = m.group(1)
+            log.info(f"[ACT] Executing chain: {chain_cmd}")
+            self._run_cc("chain", chain_cmd)
+            return
+
+        # claude_code "prompt"
+        m = re.match(r'claude_code\s+"(.+)"', action_str)
+        if not m:
+            m = re.match(r"claude_code\s+'(.+)'", action_str)
+        if m:
+            prompt = m.group(1)
+            log.info(f"[ACT] Delegating to Claude Code: {prompt[:80]}...")
+            try:
+                subprocess.Popen(
+                    f'claude -p "{prompt.replace(chr(34), chr(39))}"',
+                    shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    cwd=CONFIG.get("claude_code_workdir", os.path.expanduser("~\\Desktop")),
+                )
+            except Exception as e:
+                log.error(f"[ACT] Claude Code delegation failed: {e}")
+            return
+
+        log.warning(f"[ACT] Unknown action format: {action_str}")
+
+    def _parse_and_execute(self, response: str):
+        """Parse Claude's response for [ACTION] and [SPEAK] tags, execute actions, return speech."""
+        actions = re.findall(r'\[ACTION:\s*(.+?)\]', response)
+        speak_match = re.search(r'\[SPEAK\]\s*(.+?)(?:\[|$)', response, re.DOTALL)
+
+        if not speak_match:
+            # Fallback: if Claude didn't use the format, treat entire response as speech
+            # Strip any accidental tags
+            clean = re.sub(r'\[ACTION:.*?\]', '', response).strip()
+            clean = re.sub(r'\[SPEAK\]', '', clean).strip()
+            speak_text = clean if clean else response.strip()
+        else:
+            speak_text = speak_match.group(1).strip()
+
+        # Execute all actions
+        for action in actions:
+            try:
+                self._execute_action(action)
+            except Exception as e:
+                log.error(f"[ACT] Action failed: {e}")
+
+        return speak_text
 
     def route(self, text: str) -> dict:
-        """Parse transcribed text and route to the right handler."""
+        """Route everything through Claude as the brain."""
         if not text:
             return {"status": "empty", "message": "No speech detected"}
 
-        # Auto hot-reload: check if commands file changed on disk
         self._hot_reload_if_changed()
-
         text_lower = text.lower().strip()
-        log.info(f"[>>] Routing command: \"{text_lower}\"")
+        log.info(f"[>>] Processing: \"{text}\"")
 
-        # ── Voice command creation flow (multi-step) ──
+        # ── Voice command creation flow ──
         if self._creating_command:
             return self._voice_create_step(text)
 
-        # ── Meta commands ──
+        # ── Local-only commands (no need to bother Claude) ──
+        if text_lower in ["stop", "quit", "exit", "goodbye", "shut down"]:
+            if self.tts:
+                self.tts.speak("Shutting down. Try not to miss me too much.")
+            return {"status": "exit", "message": "Shutting down Jarvis"}
+
         if any(text_lower.startswith(p) for p in ["reload commands", "refresh commands"]):
-            self.reload_commands()
+            self.custom_commands = self._load_custom_commands()
+            self._commands_mtime = self._get_mtime()
+            if self.tts:
+                self.tts.speak_async("Commands reloaded, sir.")
             return {"status": "ok", "action": "reload_commands"}
 
-        # Open the GUI command manager
         if any(text_lower.startswith(p) for p in [
             "open command manager", "command manager", "open commands",
-            "manage commands", "open manager", "launch command manager"]):
-            return self._open_command_manager()
+            "manage commands", "open manager"]):
+            gui_path = BASE_DIR / "jarvis_gui.py"
+            subprocess.Popen([sys.executable, str(gui_path)],
+                            creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+            if self.tts:
+                self.tts.speak_async("Opening the command manager.")
+            return {"status": "ok", "action": "open_command_manager"}
 
-        # Voice command creation
         if any(text_lower.startswith(p) for p in [
             "add command", "new command", "create command",
-            "add a command", "create a command", "new voice command"]):
+            "add a command", "create a command"]):
             return self._start_voice_create(text_lower)
 
-        if any(text_lower.startswith(p) for p in ["list commands", "show commands", "what commands"]):
-            return self._list_commands()
-
-        # ── Cowork conversation commands ──
-        # "open cowork convo [name]" or "open claude cowork conversation [name]"
-        for prefix in ["open cowork convo ", "open cowork conversation ",
-                       "open claude cowork convo ", "open claude cowork conversation ",
-                       "open cowork convo of ", "open cowork conversation of "]:
-            if text_lower.startswith(prefix):
-                convo_name = text_lower[len(prefix):].strip()
-                return self.open_cowork_conversation(convo_name)
-
-        # ── Prompt Cowork (only when explicitly specified) ──
-        for prefix in ["prompt cowork ", "tell cowork ", "prompt claude cowork ",
-                       "ask cowork ", "cowork prompt ", "prompt cowork to ",
-                       "tell cowork to ", "ask cowork to ",
-                       "send to cowork ", "in cowork "]:
-            if text_lower.startswith(prefix):
-                prompt_text = text[len(prefix):].strip()
-                return self.prompt_cowork(prompt_text)
-
-        # ── Prompt Claude Code (default target — also catches generic "prompt") ──
-        for prefix in ["prompt claude code ", "tell claude code ", "ask claude code ",
-                       "claude code ", "prompt claude code to ",
-                       "tell claude code to ", "ask claude code to ",
-                       "run in terminal ", "terminal command ",
-                       "prompt ", "tell claude ", "ask claude ",
-                       "tell claude to ", "ask claude to ",
-                       "run ", "execute "]:
-            if text_lower.startswith(prefix):
-                prompt_text = text[len(prefix):].strip()
-                if prompt_text:
-                    return self.prompt_claude_code(prompt_text)
-
-        # ── Focus window ──
-        for prefix in ["focus ", "switch to ", "go to ", "bring up "]:
-            if text_lower.startswith(prefix):
-                window_name = text_lower[len(prefix):].strip()
-                # Skip if it's a more specific command
-                if not any(window_name.startswith(w) for w in ["cowork", "claude", "terminal"]):
-                    return self.focus_window(window_name)
-
-        # ── Search web ──
-        for prefix in ["search for ", "google ", "search ", "look up "]:
-            if text_lower.startswith(prefix):
-                query = text[len(prefix):].strip()
-                return self.search_web(query)
-
-        # ── Type/dictate ──
-        for prefix in ["type ", "dictate ", "write "]:
-            if text_lower.startswith(prefix):
-                content = text[len(prefix):].strip()
-                return self.type_text(content)
-
-        # ── Check custom commands ──
+        # ── Check custom commands (fast local match before hitting Claude) ──
         for cmd in self.custom_commands.get("commands", []):
             for trigger in cmd.get("triggers", []):
                 if text_lower.startswith(trigger.lower()):
                     action = cmd.get("action", "")
-                    if action in self.handlers:
-                        remaining = text_lower[len(trigger):].strip()
-                        return self.handlers[action](remaining) if remaining else self.handlers[action]()
-                    elif action.startswith("chain:"):
+                    if action.startswith("chain:"):
                         chain_cmd = action[6:]
-                        return self._run_cc("chain", f'"{chain_cmd}"')
+                        if self.tts:
+                            self.tts.speak_async("On it.")
+                        return self._run_cc("chain", chain_cmd)
 
-        # ── Simple built-in triggers ──
-        if text_lower in ["open cowork", "open claude cowork", "launch cowork"]:
-            return self.open_cowork()
-        if text_lower in ["open terminal", "open command prompt", "launch terminal"]:
-            return self.open_terminal()
-        if text_lower in ["screenshot", "take screenshot", "capture screen"]:
-            return self.take_screenshot()
-        if text_lower in ["stop", "quit", "exit", "goodbye", "shut down"]:
-            return {"status": "exit", "message": "Shutting down Jarvis"}
+        # ── Everything else → Claude Brain ──
+        log.info("[BRAIN] Sending to Claude for interpretation...")
+        self._ask_claude(text)
+        return {"status": "ok", "action": "claude_brain", "prompt": text}
 
-        # ── Hot commands: natural language → keyboard/mouse actions ──
-        if looks_like_hot_command(text):
-            chain = parse_natural_to_chain(text)
-            if chain:
-                log.info(f"[HOT] Parsed chain: {chain}")
-                return self._run_cc("chain", chain)
-
-        # ── Fallback: send to Claude Code in terminal ──
-        log.info("[?] No specific command matched — sending to Claude Code")
-        return self.prompt_claude_code(text)
-
-    # ─── Handler Methods ─────────────────────────────────────────────────
-
-    def open_cowork(self, *args):
-        """Open Claude Cowork in browser."""
-        log.info("[WEB] Opening Claude Cowork...")
-        return self._run_cc("chain",
-            "launch https://claude.ai; wait 3; screenshot")
-
-    def open_terminal(self, *args):
-        """Open Windows Terminal."""
-        log.info("[SYS] Opening Terminal...")
-        return self._run_cc("chain",
-            "launch wt.exe; wait 2; screenshot")
-
-    def take_screenshot(self, *args):
-        """Take a screenshot."""
-        log.info("[CAM] Taking screenshot...")
-        return self._run_cc("screenshot")
-
-    def open_cowork_conversation(self, convo_name: str):
-        """Open a specific Cowork conversation by name."""
-        log.info(f"[NAV] Opening Cowork conversation: {convo_name}")
-        return self._run_cc("chain",
-            f"launch https://claude.ai; wait 3; "
-            f"click_text Search --window Chrome; wait 0.5; "
-            f"type {convo_name}; wait 1; screenshot")
-
-    def prompt_cowork(self, prompt_text: str):
-        """Type a prompt into Claude Cowork."""
-        log.info(f"[>>] Prompting Cowork: {prompt_text[:80]}...")
-        return self._run_cc("chain",
-            f"focus Claude; wait 0.5; "
-            f"click 960 900; wait 0.3; "
-            f"type {prompt_text}; wait 0.3; "
-            f"key enter; wait 1; screenshot")
-
-    def prompt_claude_code(self, prompt_text: str):
-        """Send a prompt to Claude Code via 'claude -p', capture response, and speak it."""
-        log.info(f"[>>] Prompting Claude Code: {prompt_text[:80]}...")
-
-        # Wrap the user's prompt with Jarvis personality
-        full_prompt = (
-            f"{JarvisTTS.PERSONALITY_PROMPT}\n\n"
-            f"The user said: {prompt_text}"
-        )
-
-        def _run_and_speak():
+    def _ask_claude(self, user_text: str):
+        """Send user speech to Claude SDK with Gemini fallback. Runs in background thread."""
+        def _run():
             try:
-                result = subprocess.run(
-                    f'claude -p "{full_prompt.replace(chr(34), chr(39))}"',
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                    cwd=CONFIG.get("claude_code_workdir", os.path.expanduser("~\\Desktop")),
-                )
-                response = result.stdout.strip() if result.stdout else ""
-                if not response and result.stderr:
-                    response = result.stderr.strip()
+                now = datetime.now()
+                time_hint = now.strftime("%I:%M %p on %A, %B %d, %Y")
+                system_prompt = JARVIS_SYSTEM_PROMPT.replace("{time_hint}", time_hint)
+                system_prompt += f"\n\nCurrent time: {time_hint}\n\nUser said: {user_text}"
 
-                if response:
-                    log.info(f"[RESP] Claude Code response: {response[:200]}...")
-                    # Speak the response via TTS
-                    if self.tts:
-                        self.tts.speak(response)
+                # Try Claude SDK first (primary) - with retry logic
+                if HAS_CLAUDE_SDK:
+                    log.info(f"[BRAIN] Trying Claude SDK...")
+                    for attempt in range(2):  # Try twice
+                        response_text = self._try_claude_sdk(user_text, system_prompt)
+                        if response_text:
+                            self._handle_response(response_text)
+                            return
+                        elif attempt == 0:
+                            log.info(f"[BRAIN] Claude SDK attempt 1 failed, retrying...")
+                            time.sleep(1)  # Brief delay before retry
+                    log.warning("[BRAIN] Claude SDK failed after 2 attempts, trying fallback...")
+                
+                # Fallback to OpenAI GPT-4o-mini (cheap, uses existing key)
+                if HAS_OPENAI_FALLBACK and openai_fallback_client:
+                    log.info(f"[BRAIN] Using GPT-4o-mini fallback...")
+                    response_text = self._try_openai_fallback(user_text, system_prompt)
+                    if response_text:
+                        self._handle_response(response_text)
+                        return
                     else:
-                        log.warning("[TTS] No TTS engine available — response not spoken")
-                else:
-                    log.warning("[RESP] Claude Code returned empty response")
-                    if self.tts:
-                        self.tts.speak("I'm sorry, I didn't get a response from Claude Code.")
-            except subprocess.TimeoutExpired:
-                log.error("[ERR] Claude Code timed out after 120 seconds")
+                        log.warning("[BRAIN] GPT-4o-mini fallback failed")
+                
+                # Nothing worked
+                log.error("[BRAIN] All AI methods failed")
                 if self.tts:
-                    self.tts.speak("My apologies, the request timed out.")
+                    self.tts.speak("I'm having trouble connecting right now, sir.")
+
             except Exception as e:
-                log.error(f"[ERR] Claude Code failed: {e}")
+                log.error(f"[BRAIN] Error: {e}")
                 if self.tts:
-                    self.tts.speak("I encountered an error processing that request.")
+                    self.tts.speak("Something went wrong on my end. Apologies, sir.")
 
-        # Run in a background thread so the main loop stays responsive
-        thread = threading.Thread(target=_run_and_speak, daemon=True)
+        thread = threading.Thread(target=_run, daemon=True)
         thread.start()
+    
+    def _try_claude_sdk(self, user_text: str, system_prompt: str) -> str:
+        """Try Claude Code Agent SDK (primary method)."""
+        try:
+            options = ClaudeAgentOptions(
+                system_prompt=system_prompt,
+                permission_mode="auto",
+                model="sonnet",
+                output_format="text",
+            )
+            
+            import asyncio
+            
+            async def _claude_query():
+                response_text = ""
+                async for message in query(prompt=user_text, options=options):
+                    if hasattr(message, 'type'):
+                        if message.type == 'content_block' and hasattr(message, 'content'):
+                            if hasattr(message.content, 'text'):
+                                response_text += message.content.text
+                            elif isinstance(message.content, str):
+                                response_text += message.content
+                        elif message.type == 'text' and hasattr(message, 'text'):
+                            response_text += message.text
+                    else:
+                        if hasattr(message, 'content'):
+                            if hasattr(message.content, 'text'):
+                                response_text += message.content.text
+                            elif isinstance(message.content, str):
+                                response_text += message.content
+                        elif hasattr(message, 'text'):
+                            response_text += message.text
+                
+                return response_text.strip()
+            
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            response_text = loop.run_until_complete(_claude_query())
+            loop.close()
+            
+            return response_text
+            
+        except Exception as e:
+            log.debug(f"[BRAIN] Claude SDK error: {e}")
+            return ""
+    
+    def _try_openai_fallback(self, user_text: str, system_prompt: str) -> str:
+        """Try OpenAI GPT-4o-mini (cheap fallback)."""
+        try:
+            response = openai_fallback_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_text}
+                ],
+                max_tokens=500,
+                temperature=0.7
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            log.debug(f"[BRAIN] GPT-4o-mini error: {e}")
+            return ""
+    
+    def _handle_response(self, response_text: str):
+        """Process AI response and handle actions/speech."""
+        if response_text:
+            log.info(f"[BRAIN] Response: {response_text[:300]}...")
+            speak_text = self._parse_and_execute(response_text)
+            if speak_text and self.tts:
+                self.tts.speak(speak_text)
+        else:
+            log.warning("[BRAIN] Empty response")
+            if self.tts:
+                self.tts.speak("I seem to have drawn a blank on that one. Could you try again?")
 
-        log.info(f"[>>] Claude Code processing in background...")
-        return {"status": "ok", "action": "prompt_claude_code",
-                "prompt": prompt_text, "message": "Processing — will speak response when ready"}
-
-    def type_text(self, content: str):
-        """Type text at current cursor position (voice-to-type)."""
-        log.info(f"[KEY] Typing: {content[:60]}...")
-        return self._run_cc("type", content)
-
-    def search_web(self, query: str):
-        """Open browser and search for something."""
-        log.info(f"[WEB] Searching: {query}")
-        return self._run_cc("chain",
-            f"focus Chrome; wait 0.5; key ctrl+l; wait 0.2; "
-            f"type https://www.google.com/search?q={query}; "
-            f"key enter; wait 3; screenshot")
-
-    def focus_window(self, window_name: str):
-        """Focus/bring a window to foreground."""
-        log.info(f"[WIN] Focusing: {window_name}")
-        return self._run_cc("focus", window_name)
-
-    # ─── Custom Command Management ──────────────────────────────────────
-
-    def _open_command_manager(self):
-        """Launch the GUI command manager."""
-        log.info("[GUI] Opening Command Manager...")
-        gui_path = BASE_DIR / "jarvis_gui.py"
-        subprocess.Popen([sys.executable, str(gui_path)],
-                        creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
-        return {"status": "ok", "action": "open_command_manager"}
+    # ─── Voice Command Creation ──────────────────────────────────────────
 
     def _start_voice_create(self, text: str):
-        """Start the multi-step voice command creation flow."""
         log.info("[+] Starting voice command creation...")
-        log.info("    Say the COMMAND NAME after the beep")
         self._creating_command = True
         self._new_cmd_data = {"step": "name"}
-        return {
-            "status": "listening",
-            "action": "voice_create",
-            "message": "Say the command name now"
-        }
+        if self.tts:
+            self.tts.speak_async("Alright, let's create a new command. What shall we call it?")
+        return {"status": "listening", "action": "voice_create", "message": "Say the command name"}
 
     def _voice_create_step(self, text: str):
-        """Handle each step of voice command creation."""
         step = self._new_cmd_data.get("step", "name")
 
         if text.lower().strip() in ["cancel", "stop", "nevermind", "never mind"]:
             self._creating_command = False
             self._new_cmd_data = {}
-            log.info("[X] Command creation cancelled")
+            if self.tts:
+                self.tts.speak_async("Command creation cancelled.")
             return {"status": "cancelled", "action": "voice_create"}
 
         if step == "name":
             self._new_cmd_data["name"] = text.strip()
             self._new_cmd_data["step"] = "trigger"
-            log.info(f"[+] Name: '{text.strip()}'")
-            log.info("    Now say the TRIGGER PHRASE (what you'll say to activate it)")
-            return {"status": "listening", "step": "trigger",
-                    "message": f"Name set to '{text.strip()}'. Now say the trigger phrase."}
+            if self.tts:
+                self.tts.speak_async(f"Got it, {text.strip()}. Now say the trigger phrase.")
+            return {"status": "listening", "step": "trigger"}
 
         elif step == "trigger":
             self._new_cmd_data["trigger"] = text.strip().lower()
             self._new_cmd_data["step"] = "action"
-            log.info(f"[+] Trigger: '{text.strip()}'")
-            log.info("    Now say the ACTION: 'prompt cowork', 'prompt claude code',")
-            log.info("    'open cowork', 'screenshot', 'type text', or 'chain' + description")
-            return {"status": "listening", "step": "action",
-                    "message": f"Trigger set to '{text.strip()}'. Now say the action type."}
+            if self.tts:
+                self.tts.speak_async(f"Trigger set. Now tell me the action.")
+            return {"status": "listening", "step": "action"}
 
         elif step == "action":
             action_text = text.strip().lower()
-            # Map spoken action to handler name
             action_map = {
-                "prompt cowork": "prompt_cowork",
-                "prompt claude code": "prompt_claude_code",
-                "open cowork": "open_cowork",
-                "open terminal": "open_terminal",
-                "screenshot": "screenshot",
-                "type text": "type_text",
-                "type": "type_text",
-                "search": "search_web",
-                "search web": "search_web",
-                "focus window": "focus_window",
-                "focus": "focus_window",
+                "prompt cowork": "prompt_cowork", "prompt claude code": "prompt_claude_code",
+                "open cowork": "open_cowork", "open terminal": "open_terminal",
+                "screenshot": "screenshot", "type text": "type_text",
             }
-
             action = action_map.get(action_text, action_text)
-            # If it starts with "chain", treat the rest as a chain command
             if action_text.startswith("chain"):
-                chain_desc = action_text[5:].strip()
-                if chain_desc:
-                    action = f"chain:{chain_desc}"
-                else:
-                    action = "chain:"
+                action = f"chain:{action_text[5:].strip()}"
 
-            # Build and save the command
             new_cmd = {
                 "name": self._new_cmd_data["name"],
                 "triggers": [self._new_cmd_data["trigger"]],
                 "action": action,
-                "description": f"Voice-created command"
+                "description": "Voice-created command"
             }
-
             self.custom_commands.setdefault("commands", []).append(new_cmd)
             commands_path = BASE_DIR / CONFIG.get("custom_commands_file", "commands/custom_commands.json")
             with open(commands_path, "w") as f:
@@ -801,94 +926,65 @@ class CommandRouter:
 
             self._creating_command = False
             self._new_cmd_data = {}
-
-            log.info(f"[OK] Command created! Name: '{new_cmd['name']}', "
-                     f"Trigger: '{new_cmd['triggers'][0]}', Action: '{action}'")
-            log.info("     Command is live immediately - no restart needed!")
-
+            if self.tts:
+                self.tts.speak_async(f"Command created. {new_cmd['name']} is live.")
             return {"status": "ok", "action": "voice_create_complete", "command": new_cmd}
 
-        # Shouldn't get here
         self._creating_command = False
-        return {"status": "error", "message": "Unknown creation step"}
-
-    def _list_commands(self):
-        """List all available commands."""
-        built_in = [
-            "open cowork", "open terminal", "screenshot",
-            "open cowork convo [name]", "prompt cowork [text]",
-            "prompt claude code [text]", "type [text]",
-            "search [query]", "focus [window]",
-            "open command manager", "add command (voice)",
-            "reload commands", "list commands",
-            "stop / quit / exit"
-        ]
-        custom = [c["name"] for c in self.custom_commands.get("commands", [])]
-        result = {
-            "status": "ok",
-            "built_in_commands": built_in,
-            "custom_commands": custom,
-            "total": len(built_in) + len(custom)
-        }
-        log.info(f"[LIST] Commands: {json.dumps(result, indent=2)}")
-        return result
+        return {"status": "error", "message": "Unknown step"}
 
 
 # ─── Sound Feedback ──────────────────────────────────────────────────────────
 
 def play_beep(frequency=440, duration_ms=200):
-    """Play a quick beep to indicate wake-word detected."""
     if not CONFIG.get("sound_feedback", True):
         return
     try:
         import winsound
         winsound.Beep(frequency, duration_ms)
     except Exception:
-        # Fallback: print bell character
         print("\a", end="", flush=True)
 
 
 # ─── Text-to-Speech Engine ──────────────────────────────────────────────────
 
 class JarvisTTS:
-    """Text-to-speech engine with Jarvis personality. Uses Microsoft Edge neural voices (free)."""
+    """Neural TTS via Microsoft Edge (free). Smooth British male voice."""
 
-    # The voice — en-GB-RyanNeural is a smooth, refined British male. Closest to JARVIS.
-    # Alternatives: en-GB-ThomasNeural (older British), en-AU-WilliamNeural (deeper)
     VOICE = "en-GB-RyanNeural"
-
-    # System prompt injected into claude -p calls for Jarvis personality
-    PERSONALITY_PROMPT = (
-        "You are JARVIS, an AI assistant inspired by the iconic AI from Iron Man. "
-        "You speak in a refined, British-accented manner — calm, witty, and slightly dry. "
-        "Keep responses concise (1-3 sentences max) since they will be spoken aloud. "
-        "Be helpful and direct. Never use markdown, bullet points, code blocks, or special formatting — "
-        "your response will be read by a text-to-speech engine, so plain conversational text only. "
-        "Address the user as 'sir' occasionally but not every time."
-    )
 
     def __init__(self):
         self._lock = threading.Lock()
         self._tts_dir = BASE_DIR / "tts_cache"
         self._tts_dir.mkdir(exist_ok=True)
         self.available = HAS_EDGE_TTS
+        
+        # Initialize pygame mixer for faster audio playback
+        if HAS_PYGAME:
+            try:
+                pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
+                log.info("[TTS] Pygame mixer initialized for fast audio playback")
+            except Exception as e:
+                log.warning(f"[TTS] Pygame init failed: {e}")
+        
         if self.available:
             log.info(f"[TTS] Edge TTS initialized (voice: {self.VOICE}) — neural, free")
         else:
             log.warning("[TTS] edge-tts not installed — TTS disabled. Run: pip install edge-tts")
 
     def _clean_text(self, text: str) -> str:
-        """Clean up text for speech — strip markdown, code fences, URLs."""
         clean = text.strip()
         clean = clean.replace("```", "").replace("`", "")
         clean = clean.replace("**", "").replace("__", "")
         clean = clean.replace("#", "")
+        # Strip any leftover action tags
+        clean = re.sub(r'\[ACTION:.*?\]', '', clean)
+        clean = re.sub(r'\[SPEAK\]', '', clean)
         clean = re.sub(r'https?://\S+', '', clean)
         clean = clean.strip()
         return clean
 
     def speak(self, text: str):
-        """Speak text aloud using Edge TTS neural voice. Thread-safe."""
         if not self.available or not text:
             return
         clean = self._clean_text(text)
@@ -898,48 +994,75 @@ class JarvisTTS:
         log.info(f"[TTS] Speaking: {clean[:100]}...")
         with self._lock:
             try:
-                # Generate audio to a temp file, then play it
-                audio_path = str(self._tts_dir / "jarvis_response.mp3")
+                # Use timestamp to avoid file conflicts
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                audio_path = self._tts_dir / f"jarvis_response_{timestamp}.mp3"
 
-                # edge-tts is async, so we run it in an event loop
                 async def _generate():
                     communicate = edge_tts.Communicate(clean, self.VOICE, rate="-5%")
-                    await communicate.save(audio_path)
+                    await communicate.save(str(audio_path))
 
-                # Use a fresh event loop for this thread
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 loop.run_until_complete(_generate())
                 loop.close()
 
-                # Play the MP3 using Windows Media Player COM (handles mp3 natively)
-                if os.name == 'nt':
-                    # Use PowerShell with Windows Media Player for MP3 playback
-                    ps_cmd = (
-                        f"$p = New-Object System.Windows.Media.MediaPlayer; "
-                        f"$p.Open([Uri]'{audio_path}'); "
-                        f"$p.Play(); "
-                        f"Start-Sleep -Milliseconds 500; "
-                        f"while ($p.NaturalDuration.HasTimeSpan -eq $false) {{ Start-Sleep -Milliseconds 100 }}; "
-                        f"while ($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
-                        f"$p.Close()"
-                    )
-                    subprocess.run(
-                        ["powershell", "-Command",
-                         f"Add-Type -AssemblyName PresentationCore; {ps_cmd}"],
-                        shell=False, timeout=60,
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
+                # Fast pygame playback instead of PowerShell
+                if HAS_PYGAME and audio_path.exists():
+                    try:
+                        pygame.mixer.music.load(str(audio_path))
+                        pygame.mixer.music.play()
+                        
+                        # Wait for playback to finish
+                        while pygame.mixer.music.get_busy():
+                            pygame.time.wait(100)
+                            
+                    except Exception as e:
+                        log.warning(f"[TTS] Pygame playback failed, falling back: {e}")
+                        # Fallback to original method
+                        self._fallback_playback(str(audio_path))
                 else:
-                    # Fallback for non-Windows
-                    subprocess.run(["ffplay", "-nodisp", "-autoexit", audio_path],
-                                   timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    # Original fallback method
+                    self._fallback_playback(str(audio_path))
+                
+                # Clean up old audio files (keep only last 5)
+                try:
+                    audio_files = sorted(self._tts_dir.glob("jarvis_response_*.mp3"))
+                    if len(audio_files) > 5:
+                        for old_file in audio_files[:-5]:
+                            try:
+                                old_file.unlink()
+                            except Exception as cleanup_e:
+                                log.debug(f"[TTS] Cleanup failed for {old_file}: {cleanup_e}")
+                except Exception as cleanup_e:
+                    log.debug(f"[TTS] Cleanup error: {cleanup_e}")
 
             except Exception as e:
                 log.error(f"[TTS] Speech error: {e}")
+    
+    def _fallback_playback(self, audio_path: str):
+        """Original PowerShell/ffplay fallback method."""
+        if os.name == 'nt':
+            ps_cmd = (
+                f"$p = New-Object System.Windows.Media.MediaPlayer; "
+                f"$p.Open([Uri]'{audio_path}'); "
+                f"$p.Play(); "
+                f"Start-Sleep -Milliseconds 500; "
+                f"while ($p.NaturalDuration.HasTimeSpan -eq $false) {{ Start-Sleep -Milliseconds 100 }}; "
+                f"while ($p.Position -lt $p.NaturalDuration.TimeSpan) {{ Start-Sleep -Milliseconds 100 }}; "
+                f"$p.Close()"
+            )
+            subprocess.run(
+                ["powershell", "-Command",
+                 f"Add-Type -AssemblyName PresentationCore; {ps_cmd}"],
+                shell=False, timeout=60,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        else:
+            subprocess.run(["ffplay", "-nodisp", "-autoexit", audio_path],
+                           timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def speak_async(self, text: str):
-        """Speak text in a background thread so it doesn't block the main loop."""
         t = threading.Thread(target=self.speak, args=(text,), daemon=True)
         t.start()
         return t
@@ -950,9 +1073,8 @@ class JarvisTTS:
 class Jarvis:
     """Main Jarvis voice assistant controller."""
 
-    # OpenWakeWord settings
     OWW_SAMPLE_RATE = 16000
-    OWW_CHUNK = 1280  # 80ms at 16kHz — OpenWakeWord's expected frame size
+    OWW_CHUNK = 1280
 
     def __init__(self):
         self.recorder = AudioRecorder(sample_rate=self.OWW_SAMPLE_RATE)
@@ -964,141 +1086,102 @@ class Jarvis:
         self.pa = None
 
     def start(self):
-        """Initialize OpenWakeWord and start listening."""
         log.info("=" * 60)
         log.info("[*] JARVIS Voice Assistant Starting...")
         log.info("=" * 60)
 
         try:
-            # Store models in our own folder to avoid system permission issues
             models_dir = BASE_DIR / "models"
             models_dir.mkdir(exist_ok=True)
-
             model_path = models_dir / "hey_jarvis_v0.1.onnx"
 
-            # Download the hey_jarvis model if we don't have it yet
             if not model_path.exists():
-                log.info("[*] Downloading 'hey_jarvis' model (one-time, ~few MB)...")
+                log.info("[*] Downloading 'hey_jarvis' model (one-time)...")
                 try:
                     openwakeword.utils.download_models(
-                        model_names=["hey_jarvis"],
-                        target_directory=str(models_dir)
-                    )
-                    log.info("[OK] Model downloaded to models/ folder")
+                        model_names=["hey_jarvis"], target_directory=str(models_dir))
                 except Exception as dl_err:
-                    log.warning(f"[!] Auto-download failed ({dl_err}), trying manual download...")
-                    # Fallback: download directly with urllib
+                    log.warning(f"[!] Auto-download failed ({dl_err}), trying manual...")
                     import urllib.request
                     url = "https://github.com/dscripka/openWakeWord/releases/download/v0.1.1/hey_jarvis_v0.1.onnx"
                     urllib.request.urlretrieve(url, str(model_path))
-                    log.info("[OK] Model downloaded manually to models/ folder")
 
-            # Find the .onnx model file
             onnx_files = list(models_dir.glob("*jarvis*.onnx"))
             if not onnx_files:
                 raise FileNotFoundError(f"No jarvis model found in {models_dir}")
 
-            # Initialize OpenWakeWord with our local model path
             self.oww_model = OWWModel(
-                wakeword_models=[str(onnx_files[0])],
-                inference_framework="onnx"
-            )
-            log.info(f"[OK] OpenWakeWord initialized (model: '{onnx_files[0].name}')")
-            log.info(f"     Responds to 'Hey Jarvis' and just 'Jarvis' — 100% free")
+                wakeword_models=[str(onnx_files[0])], inference_framework="onnx")
+            log.info(f"[OK] OpenWakeWord: '{onnx_files[0].name}' — responds to 'Hey Jarvis' and 'Jarvis'")
 
         except Exception as e:
             log.error(f"[ERR] OpenWakeWord init failed: {e}")
-            log.error("      Try: pip install openwakeword")
             sys.exit(1)
 
-        # Initialize PyAudio
         self.pa = pyaudio.PyAudio()
-        device_index = CONFIG.get("audio_device_index")
-
         audio_stream = self.pa.open(
-            rate=self.OWW_SAMPLE_RATE,
-            channels=1,
-            format=pyaudio.paInt16,
-            input=True,
-            frames_per_buffer=self.OWW_CHUNK,
-            input_device_index=device_index
-        )
+            rate=self.OWW_SAMPLE_RATE, channels=1, format=pyaudio.paInt16,
+            input=True, frames_per_buffer=self.OWW_CHUNK,
+            input_device_index=CONFIG.get("audio_device_index"))
 
-        # Two thresholds: high for "Hey Jarvis" (reliable), lower for just "Jarvis"
         threshold_high = CONFIG.get("oww_threshold", 0.5)
         threshold_low = CONFIG.get("oww_threshold_low", 0.2)
 
-        log.info("[MIC] Microphone active — say 'Hey Jarvis' or just 'Jarvis' to start")
-        log.info(f"     Thresholds: 'Hey Jarvis' >= {threshold_high}, 'Jarvis' >= {threshold_low}")
-        log.info("   Press Ctrl+C to quit")
+        log.info("[MIC] Say 'Hey Jarvis' or just 'Jarvis' to start")
+        log.info(f"     Thresholds: high={threshold_high}, low={threshold_low}")
         log.info("-" * 60)
 
-        # Startup greeting
-        self.tts.speak_async("Jarvis online. Ready for your command, sir.")
+        # Random startup greeting
+        greeting = random.choice(STARTUP_GREETINGS)
+        self.tts.speak_async(greeting)
 
         self.running = True
 
         try:
             while self.running:
-                # Read audio frame for wake-word detection
                 pcm = audio_stream.read(self.OWW_CHUNK, exception_on_overflow=False)
                 audio_array = np.frombuffer(pcm, dtype=np.int16)
-
-                # Feed to OpenWakeWord — predict() returns a dict of {model_name: score}
                 prediction = self.oww_model.predict(audio_array)
 
-                # Get the score for hey_jarvis from the prediction dict
-                # The key might be the full path or just the model name
                 jarvis_score = 0
                 for key, score in prediction.items():
                     if "jarvis" in key.lower():
                         jarvis_score = score
                         break
 
-                # Use the lower threshold — the hey_jarvis model also partially
-                # activates on just "Jarvis" with a lower confidence score.
-                # This lets both "Hey Jarvis" and just "Jarvis" work as wake words.
                 if jarvis_score > threshold_low:
                     wake_type = "HEY JARVIS" if jarvis_score > threshold_high else "JARVIS"
-                    log.info(f"[WAKE] Wake word detected! — '{wake_type}' (confidence: {jarvis_score:.2f})")
-                    # Reset the model state to avoid repeat triggers
+                    log.info(f"[WAKE] '{wake_type}' detected (confidence: {jarvis_score:.2f})")
                     self.oww_model.reset()
 
-                    play_beep(880, 150)  # High beep = listening
+                    play_beep(880, 150)
 
-                    # Record the command
                     wav_path = self.recorder.record_until_silence(self.pa)
+                    play_beep(440, 100)
 
-                    play_beep(440, 100)  # Low beep = processing
-
-                    # Transcribe
                     text = self.transcriber.transcribe(wav_path)
 
                     if text:
-                        # Route command
                         result = self.router.route(text)
                         log.info(f"[OK] Result: {json.dumps(result, indent=2, default=str)}")
-
                         if result.get("status") == "exit":
-                            log.info("[BYE] Jarvis shutting down...")
                             self.running = False
                     else:
-                        log.info("[...] No speech detected, resuming listening...")
+                        log.info("[...] No speech detected, resuming...")
 
-                    play_beep(660, 100)  # Mid beep = ready again
+                    play_beep(660, 100)
                     log.info("[MIC] Listening for wake word...")
 
         except KeyboardInterrupt:
-            log.info("\n[BYE] Jarvis stopped by user (Ctrl+C)")
+            log.info("\n[BYE] Jarvis stopped by user")
         finally:
             self.stop()
 
     def stop(self):
-        """Clean up resources."""
         self.running = False
         if self.pa:
             self.pa.terminate()
-        log.info("[OFF] Jarvis shut down cleanly.")
+        log.info("[OFF] Jarvis shut down.")
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
