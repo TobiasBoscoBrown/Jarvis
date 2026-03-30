@@ -1,0 +1,27 @@
+{
+    "commands": [
+        {
+            "name": "open cowork",
+            "triggers": ["open cowork", "open claude cowork", "launch cowork"],
+            "action": "open_cowork",
+            "description": "Opens Claude Cowork in the browser"
+        },
+        {
+            "name": "open terminal",
+            "triggers": ["open terminal", "open command prompt", "launch terminal"],
+            "action": "open_terminal",
+            "description": "Opens Windows Terminal"
+        },
+        {
+            "name": "take screenshot",
+            "triggers": ["take screenshot", "screenshot", "capture screen"],
+            "action": "screenshot",
+            "description": "Takes a screenshot of the current screen"
+        }
+    ],
+    "aliases": {
+        "cowork": "Claude Cowork",
+        "claude code": "Claude Code",
+        "terminal": "Windows Terminal"
+    }
+}
