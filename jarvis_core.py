@@ -632,13 +632,23 @@ class CommandRouter:
             f"key enter; wait 1; screenshot")
 
     def prompt_claude_code(self, prompt_text: str):
-        """Send a command to Claude Code in the terminal."""
+        """Send a prompt to Claude Code via 'claude -p' (runs in background, no window needed)."""
         log.info(f"[>>] Prompting Claude Code: {prompt_text[:80]}...")
-        terminal_title = CONFIG.get("claude_code_terminal", "Windows Terminal")
-        return self._run_cc("chain",
-            f"focus {terminal_title}; wait 0.5; "
-            f"type {prompt_text}; wait 0.3; "
-            f"key enter; wait 1; screenshot")
+        try:
+            # Run claude -p in background so Jarvis doesn't block waiting for it
+            process = subprocess.Popen(
+                f'claude -p "{prompt_text}"',
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=CONFIG.get("claude_code_workdir", os.path.expanduser("~\\Desktop")),
+            )
+            log.info(f"[>>] Claude Code running in background (PID: {process.pid})")
+            return {"status": "ok", "action": "prompt_claude_code",
+                    "pid": process.pid, "prompt": prompt_text}
+        except Exception as e:
+            log.error(f"[ERR] Claude Code failed: {e}")
+            return {"status": "error", "message": str(e)}
 
     def type_text(self, content: str):
         """Type text at current cursor position (voice-to-type)."""
