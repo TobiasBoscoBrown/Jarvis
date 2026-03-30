@@ -24,6 +24,106 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+# Token tracking
+import tiktoken
+TOKEN_STATS = {
+    "claude": {"input_tokens": 0, "output_tokens": 0, "requests": 0},
+    "openai_chat": {"input_tokens": 0, "output_tokens": 0, "requests": 0},
+    "whisper": {"minutes": 0, "requests": 0}
+}
+
+def count_tokens(text: str, model: str = "gpt-4o-mini") -> int:
+    """Count tokens in text using tiktoken."""
+    try:
+        if model.startswith("gpt"):
+            encoding = tiktoken.encoding_for_model(model)
+        else:
+            encoding = tiktoken.get_encoding("cl100k_base")  # Default for most models
+        return len(encoding.encode(text))
+    except:
+        # Fallback: rough estimate (1 token ≈ 4 characters)
+        return len(text) // 4
+
+def log_tokens(service: str, input_tokens: int = 0, output_tokens: int = 0, minutes: float = 0):
+    """Log token usage and update stats."""
+    if service == "claude":
+        TOKEN_STATS["claude"]["input_tokens"] += input_tokens
+        TOKEN_STATS["claude"]["output_tokens"] += output_tokens
+        TOKEN_STATS["claude"]["requests"] += 1
+        log.info(f"[TOKENS] Claude SDK: {input_tokens} input, {output_tokens} output")
+    elif service == "openai_chat":
+        TOKEN_STATS["openai_chat"]["input_tokens"] += input_tokens
+        TOKEN_STATS["openai_chat"]["output_tokens"] += output_tokens
+        TOKEN_STATS["openai_chat"]["requests"] += 1
+        log.info(f"[TOKENS] OpenAI Chat: {input_tokens} input, {output_tokens} output")
+    elif service == "whisper":
+        TOKEN_STATS["whisper"]["minutes"] += minutes
+        TOKEN_STATS["whisper"]["requests"] += 1
+        log.info(f"[TOKENS] Whisper: {minutes:.2f} minutes")
+    
+    # Log cumulative stats
+    total_input = TOKEN_STATS["claude"]["input_tokens"] + TOKEN_STATS["openai_chat"]["input_tokens"]
+    total_output = TOKEN_STATS["claude"]["output_tokens"] + TOKEN_STATS["openai_chat"]["output_tokens"]
+    total_requests = TOKEN_STATS["claude"]["requests"] + TOKEN_STATS["openai_chat"]["requests"] + TOKEN_STATS["whisper"]["requests"]
+    
+    log.info(f"[TOKENS] TOTAL: {total_input} input, {total_output} output, {total_requests} requests")
+
+def print_token_summary():
+    """Print comprehensive token usage summary."""
+    print("\n" + "="*80)
+    print("📊 TOKEN USAGE SUMMARY")
+    print("="*80)
+    
+    # Claude stats
+    claude_stats = TOKEN_STATS["claude"]
+    if claude_stats["requests"] > 0:
+        print(f"\n🤖 Claude SDK:")
+        print(f"   Requests: {claude_stats['requests']}")
+        print(f"   Input tokens: {claude_stats['input_tokens']:,}")
+        print(f"   Output tokens: {claude_stats['output_tokens']:,}")
+        print(f"   Total tokens: {claude_stats['input_tokens'] + claude_stats['output_tokens']:,}")
+        # Rough cost estimate (Claude pricing)
+        claude_cost = (claude_stats['input_tokens'] * 0.015 + claude_stats['output_tokens'] * 0.075) / 1000
+        print(f"   Est. cost: ${claude_cost:.4f}")
+    
+    # OpenAI stats
+    openai_stats = TOKEN_STATS["openai_chat"]
+    if openai_stats["requests"] > 0:
+        print(f"\n🧠 OpenAI GPT-4o-mini:")
+        print(f"   Requests: {openai_stats['requests']}")
+        print(f"   Input tokens: {openai_stats['input_tokens']:,}")
+        print(f"   Output tokens: {openai_stats['output_tokens']:,}")
+        print(f"   Total tokens: {openai_stats['input_tokens'] + openai_stats['output_tokens']:,}")
+        # GPT-4o-mini pricing
+        openai_cost = (openai_stats['input_tokens'] * 0.15 + openai_stats['output_tokens'] * 0.60) / 1000000
+        print(f"   Est. cost: ${openai_cost:.4f}")
+    
+    # Whisper stats
+    whisper_stats = TOKEN_STATS["whisper"]
+    if whisper_stats["requests"] > 0:
+        print(f"\n🎤 Whisper Transcription:")
+        print(f"   Requests: {whisper_stats['requests']}")
+        print(f"   Minutes: {whisper_stats['minutes']:.2f}")
+        # Whisper pricing (roughly $0.006 per minute)
+        whisper_cost = whisper_stats['minutes'] * 0.006
+        print(f"   Est. cost: ${whisper_cost:.4f}")
+    
+    # Total summary
+    total_input = TOKEN_STATS["claude"]["input_tokens"] + TOKEN_STATS["openai_chat"]["input_tokens"]
+    total_output = TOKEN_STATS["claude"]["output_tokens"] + TOKEN_STATS["openai_chat"]["output_tokens"]
+    total_requests = TOKEN_STATS["claude"]["requests"] + TOKEN_STATS["openai_chat"]["requests"] + TOKEN_STATS["whisper"]["requests"]
+    total_cost = ((claude_stats['input_tokens'] * 0.015 + claude_stats['output_tokens'] * 0.075) / 1000 +
+                  (openai_stats['input_tokens'] * 0.15 + openai_stats['output_tokens'] * 0.60) / 1000000 +
+                  whisper_stats['minutes'] * 0.006)
+    
+    print(f"\n🎯 OVERALL TOTAL:")
+    print(f"   Total requests: {total_requests}")
+    print(f"   Total input tokens: {total_input:,}")
+    print(f"   Total output tokens: {total_output:,}")
+    print(f"   Total cost: ${total_cost:.4f}")
+    
+    print("="*80)
+
 # OpenWakeWord (free, open-source wake word detection)
 try:
     import openwakeword
@@ -210,6 +310,14 @@ class WhisperTranscriber:
             log.error("Whisper client not available")
             return ""
         try:
+            # Calculate audio duration for token tracking
+            import wave
+            with wave.open(str(audio_path), 'rb') as wav_file:
+                frames = wav_file.getnframes()
+                framerate = wav_file.getframerate()
+                duration_seconds = frames / framerate
+                duration_minutes = duration_seconds / 60
+            
             with open(audio_path, "rb") as audio_file:
                 response = whisper_client.audio.transcriptions.create(
                     model=self.model,
@@ -217,6 +325,10 @@ class WhisperTranscriber:
                     language="en"
                 )
             text = response.text.strip()
+            
+            # Log Whisper usage
+            log_tokens("whisper", minutes=duration_minutes)
+            
             log.info(f"[TXT] Transcription: \"{text}\"")
             return text
         except Exception as e:
@@ -807,6 +919,10 @@ class CommandRouter:
     def _try_claude_sdk(self, user_text: str, system_prompt: str) -> str:
         """Try Claude Code Agent SDK (primary method)."""
         try:
+            # Count input tokens
+            input_text = f"{system_prompt}\n\n{user_text}"
+            input_tokens = count_tokens(input_text, "claude-3-sonnet")
+            
             options = ClaudeAgentOptions(
                 system_prompt=system_prompt,
                 permission_mode="auto",
@@ -843,6 +959,10 @@ class CommandRouter:
             response_text = loop.run_until_complete(_claude_query())
             loop.close()
             
+            # Count output tokens and log usage
+            output_tokens = count_tokens(response_text, "claude-3-sonnet")
+            log_tokens("claude", input_tokens, output_tokens)
+            
             return response_text
             
         except Exception as e:
@@ -852,6 +972,10 @@ class CommandRouter:
     def _try_openai_fallback(self, user_text: str, system_prompt: str) -> str:
         """Try OpenAI GPT-4o-mini (cheap fallback)."""
         try:
+            # Count input tokens
+            input_text = f"{system_prompt}\n\n{user_text}"
+            input_tokens = count_tokens(input_text, "gpt-4o-mini")
+            
             response = openai_fallback_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -862,7 +986,13 @@ class CommandRouter:
                 temperature=0.7
             )
             
-            return response.choices[0].message.content.strip()
+            response_text = response.choices[0].message.content.strip()
+            
+            # Count output tokens and log usage
+            output_tokens = count_tokens(response_text, "gpt-4o-mini")
+            log_tokens("openai_chat", input_tokens, output_tokens)
+            
+            return response_text
             
         except Exception as e:
             log.debug(f"[BRAIN] GPT-4o-mini error: {e}")
@@ -1199,5 +1329,11 @@ class Jarvis:
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    jarvis = Jarvis()
-    jarvis.start()
+    try:
+        jarvis = Jarvis()
+        jarvis.start()
+    except KeyboardInterrupt:
+        print("\n[!] Jarvis stopped by user")
+    finally:
+        # Always print token summary on exit
+        print_token_summary()
