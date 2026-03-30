@@ -53,13 +53,13 @@ def load_config():
 
 CONFIG = load_config()
 
-# Logging
+# Logging — force UTF-8 on Windows console to support status icons
 logging.basicConfig(
     level=getattr(logging, CONFIG.get("log_level", "INFO")),
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_DIR / f"jarvis_{datetime.now():%Y%m%d}.log")
+        logging.StreamHandler(open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)),
+        logging.FileHandler(LOG_DIR / f"jarvis_{datetime.now():%Y%m%d}.log", encoding="utf-8")
     ]
 )
 log = logging.getLogger("Jarvis")
@@ -81,7 +81,7 @@ class AudioRecorder:
 
     def record_until_silence(self, pa_instance, stream=None):
         """Record from mic until silence detected. Returns path to WAV file."""
-        log.info("🎙️  Listening... (speak now)")
+        log.info("[MIC] Listening... (speak now)")
 
         if stream is None:
             stream = pa_instance.open(
@@ -106,7 +106,7 @@ class AudioRecorder:
         while True:
             elapsed = time.time() - start_time
             if elapsed > max_duration:
-                log.warning("⏱️  Max recording duration reached")
+                log.warning("[!] Max recording duration reached")
                 break
 
             try:
@@ -125,7 +125,7 @@ class AudioRecorder:
                 if silence_start is None:
                     silence_start = time.time()
                 elif time.time() - silence_start > self.silence_threshold:
-                    log.info("🔇 Silence detected, processing...")
+                    log.info("[...] Silence detected, processing...")
                     break
             else:
                 silence_start = None
@@ -142,7 +142,7 @@ class AudioRecorder:
             wf.setframerate(self.sample_rate)
             wf.writeframes(b"".join(frames))
 
-        log.info(f"📁 Audio saved: {wav_path}")
+        log.info(f"[SAVE] Audio saved: {wav_path}")
         return wav_path
 
 
@@ -156,7 +156,7 @@ class WhisperTranscriber:
 
     def transcribe(self, audio_path: Path) -> str:
         """Send audio to Whisper API, return transcription text."""
-        log.info(f"🧠 Transcribing with {self.model}...")
+        log.info(f"[AI] Transcribing with {self.model}...")
         try:
             with open(audio_path, "rb") as audio_file:
                 response = client.audio.transcriptions.create(
@@ -165,7 +165,7 @@ class WhisperTranscriber:
                     language="en"
                 )
             text = response.text.strip()
-            log.info(f"📝 Transcription: \"{text}\"")
+            log.info(f"[TXT] Transcription: \"{text}\"")
             return text
         except Exception as e:
             log.error(f"Whisper API error: {e}")
@@ -202,14 +202,14 @@ class CommandRouter:
     def reload_commands(self):
         """Hot-reload custom commands from disk."""
         self.custom_commands = self._load_custom_commands()
-        log.info("🔄 Custom commands reloaded")
+        log.info("[OK] Custom commands reloaded")
 
     def _run_cc(self, *args):
         """Run cc.py with given arguments via PowerShell."""
         cmd_parts = ['python', f'"{self.cc_py}"'] + list(args)
         cmd_str = ' '.join(cmd_parts)
         full_cmd = f"powershell -Command \"{cmd_str}\""
-        log.info(f"🖥️  Running: {cmd_str}")
+        log.info(f"[CMD] Running: {cmd_str}")
         try:
             result = subprocess.run(
                 full_cmd,
@@ -239,7 +239,7 @@ class CommandRouter:
             return {"status": "empty", "message": "No speech detected"}
 
         text_lower = text.lower().strip()
-        log.info(f"🔀 Routing command: \"{text_lower}\"")
+        log.info(f"[>>] Routing command: \"{text_lower}\"")
 
         # ── Meta commands ──
         if any(text_lower.startswith(p) for p in ["reload commands", "refresh commands"]):
@@ -321,31 +321,31 @@ class CommandRouter:
             return {"status": "exit", "message": "Shutting down Jarvis"}
 
         # ── Fallback: treat as a prompt to Cowork ──
-        log.info("🤔 No specific command matched — sending as Cowork prompt")
+        log.info("[?] No specific command matched — sending as Cowork prompt")
         return self.prompt_cowork(text)
 
     # ─── Handler Methods ─────────────────────────────────────────────────
 
     def open_cowork(self, *args):
         """Open Claude Cowork in browser."""
-        log.info("🌐 Opening Claude Cowork...")
+        log.info("[WEB] Opening Claude Cowork...")
         return self._run_cc("chain",
             '"launch https://claude.ai; wait 3; screenshot"')
 
     def open_terminal(self, *args):
         """Open Windows Terminal."""
-        log.info("💻 Opening Terminal...")
+        log.info("[SYS] Opening Terminal...")
         return self._run_cc("chain",
             '"launch wt.exe; wait 2; screenshot"')
 
     def take_screenshot(self, *args):
         """Take a screenshot."""
-        log.info("📸 Taking screenshot...")
+        log.info("[CAM] Taking screenshot...")
         return self._run_cc("screenshot")
 
     def open_cowork_conversation(self, convo_name: str):
         """Open a specific Cowork conversation by name."""
-        log.info(f"📂 Opening Cowork conversation: {convo_name}")
+        log.info(f"[NAV] Opening Cowork conversation: {convo_name}")
         # Focus browser, go to claude.ai, search for conversation
         return self._run_cc("chain",
             f'"launch https://claude.ai; wait 3; '
@@ -354,7 +354,7 @@ class CommandRouter:
 
     def prompt_cowork(self, prompt_text: str):
         """Type a prompt into Claude Cowork."""
-        log.info(f"💬 Prompting Cowork: {prompt_text[:80]}...")
+        log.info(f"[>>] Prompting Cowork: {prompt_text[:80]}...")
         # Focus Cowork window, find the input area, type the prompt, send
         safe_text = prompt_text.replace('"', '\\"')
         return self._run_cc("chain",
@@ -365,7 +365,7 @@ class CommandRouter:
 
     def prompt_claude_code(self, prompt_text: str):
         """Send a command to Claude Code in the terminal."""
-        log.info(f"🤖 Prompting Claude Code: {prompt_text[:80]}...")
+        log.info(f"[>>] Prompting Claude Code: {prompt_text[:80]}...")
         terminal_title = CONFIG.get("claude_code_terminal", "Windows Terminal")
         safe_text = prompt_text.replace('"', '\\"')
         return self._run_cc("chain",
@@ -375,13 +375,13 @@ class CommandRouter:
 
     def type_text(self, content: str):
         """Type text at current cursor position (voice-to-type)."""
-        log.info(f"⌨️  Typing: {content[:60]}...")
+        log.info(f"[KEY] Typing: {content[:60]}...")
         safe_text = content.replace('"', '\\"')
         return self._run_cc("type", f'"{safe_text}"')
 
     def search_web(self, query: str):
         """Open browser and search for something."""
-        log.info(f"🔍 Searching: {query}")
+        log.info(f"[WEB] Searching: {query}")
         safe_query = query.replace('"', '\\"')
         return self._run_cc("chain",
             f'"focus Chrome; wait 0.5; key ctrl+l; wait 0.2; '
@@ -390,14 +390,14 @@ class CommandRouter:
 
     def focus_window(self, window_name: str):
         """Focus/bring a window to foreground."""
-        log.info(f"🪟 Focusing: {window_name}")
+        log.info(f"[WIN] Focusing: {window_name}")
         return self._run_cc("focus", f'"{window_name}"')
 
     # ─── Custom Command Management ──────────────────────────────────────
 
     def _handle_add_command(self, text: str):
         """Parse 'add command [name] triggers [t1,t2] action [action]'."""
-        log.info(f"➕ Adding custom command from voice: {text}")
+        log.info(f"[+] Adding custom command from voice: {text}")
         # Simple parsing - for complex commands, use the command editor
         return {
             "status": "info",
@@ -422,7 +422,7 @@ class CommandRouter:
             "custom_commands": custom,
             "total": len(built_in) + len(custom)
         }
-        log.info(f"📋 Commands: {json.dumps(result, indent=2)}")
+        log.info(f"[LIST] Commands: {json.dumps(result, indent=2)}")
         return result
 
 
@@ -460,25 +460,50 @@ class Jarvis:
     def start(self):
         """Initialize OpenWakeWord and start listening."""
         log.info("=" * 60)
-        log.info("🤖 JARVIS Voice Assistant Starting...")
+        log.info("[*] JARVIS Voice Assistant Starting...")
         log.info("=" * 60)
 
         try:
-            # Download pre-trained models on first run (tiny, ~few MB)
-            openwakeword.utils.download_models()
+            # Store models in our own folder to avoid system permission issues
+            models_dir = BASE_DIR / "models"
+            models_dir.mkdir(exist_ok=True)
 
-            # Initialize OpenWakeWord — "hey_jarvis" is a built-in model
+            model_path = models_dir / "hey_jarvis_v0.1.onnx"
+
+            # Download the hey_jarvis model if we don't have it yet
+            if not model_path.exists():
+                log.info("[*] Downloading 'hey_jarvis' model (one-time, ~few MB)...")
+                try:
+                    openwakeword.utils.download_models(
+                        model_names=["hey_jarvis"],
+                        target_directory=str(models_dir)
+                    )
+                    log.info("[OK] Model downloaded to models/ folder")
+                except Exception as dl_err:
+                    log.warning(f"[!] Auto-download failed ({dl_err}), trying manual download...")
+                    # Fallback: download directly with urllib
+                    import urllib.request
+                    url = "https://github.com/dscripka/openWakeWord/releases/download/v0.1.1/hey_jarvis_v0.1.onnx"
+                    urllib.request.urlretrieve(url, str(model_path))
+                    log.info("[OK] Model downloaded manually to models/ folder")
+
+            # Find the .onnx model file
+            onnx_files = list(models_dir.glob("*jarvis*.onnx"))
+            if not onnx_files:
+                raise FileNotFoundError(f"No jarvis model found in {models_dir}")
+
+            # Initialize OpenWakeWord with our local model path
             self.oww_model = OWWModel(
-                wakeword_models=["hey_jarvis"],
+                wakeword_models=[str(onnx_files[0])],
                 inference_framework="onnx"
             )
             threshold = CONFIG.get("oww_threshold", 0.5)
-            log.info(f"✅ OpenWakeWord initialized (model: 'hey_jarvis', threshold: {threshold})")
-            log.info(f"   100% free — no API keys needed for wake word detection")
+            log.info(f"[OK] OpenWakeWord initialized (model: '{onnx_files[0].name}', threshold: {threshold})")
+            log.info(f"     100% free - no API keys needed for wake word detection")
 
         except Exception as e:
-            log.error(f"❌ OpenWakeWord init failed: {e}")
-            log.error("   Try: pip install openwakeword")
+            log.error(f"[ERR] OpenWakeWord init failed: {e}")
+            log.error("      Try: pip install openwakeword")
             sys.exit(1)
 
         # Initialize PyAudio
@@ -496,7 +521,7 @@ class Jarvis:
 
         threshold = CONFIG.get("oww_threshold", 0.5)
 
-        log.info("🎤 Microphone active — say 'Hey Jarvis' to start a command")
+        log.info("[MIC] Microphone active — say 'Hey Jarvis' to start a command")
         log.info("   Press Ctrl+C to quit")
         log.info("-" * 60)
 
@@ -516,7 +541,7 @@ class Jarvis:
                 jarvis_score = scores.get("hey_jarvis", 0)
 
                 if jarvis_score > threshold:
-                    log.info(f"🟢 Wake word detected! — 'HEY JARVIS' (confidence: {jarvis_score:.2f})")
+                    log.info(f"[WAKE] Wake word detected! — 'HEY JARVIS' (confidence: {jarvis_score:.2f})")
                     # Reset the model state to avoid repeat triggers
                     self.oww_model.reset()
 
@@ -533,19 +558,19 @@ class Jarvis:
                     if text:
                         # Route command
                         result = self.router.route(text)
-                        log.info(f"✅ Result: {json.dumps(result, indent=2, default=str)}")
+                        log.info(f"[OK] Result: {json.dumps(result, indent=2, default=str)}")
 
                         if result.get("status") == "exit":
-                            log.info("👋 Jarvis shutting down...")
+                            log.info("[BYE] Jarvis shutting down...")
                             self.running = False
                     else:
-                        log.info("🔇 No speech detected, resuming listening...")
+                        log.info("[...] No speech detected, resuming listening...")
 
                     play_beep(660, 100)  # Mid beep = ready again
-                    log.info("🎤 Listening for wake word...")
+                    log.info("[MIC] Listening for wake word...")
 
         except KeyboardInterrupt:
-            log.info("\n👋 Jarvis stopped by user (Ctrl+C)")
+            log.info("\n[BYE] Jarvis stopped by user (Ctrl+C)")
         finally:
             self.stop()
 
@@ -554,7 +579,7 @@ class Jarvis:
         self.running = False
         if self.pa:
             self.pa.terminate()
-        log.info("🔴 Jarvis shut down cleanly.")
+        log.info("[OFF] Jarvis shut down cleanly.")
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────

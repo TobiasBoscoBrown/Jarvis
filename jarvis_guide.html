@@ -489,9 +489,9 @@
     </div>
     <div class="flow-arrow">→</div>
     <div class="flow-node">
-      <div class="icon">🐻</div>
-      <div class="label">Porcupine</div>
-      <div class="desc">Detects "Jarvis" wake word locally</div>
+      <div class="icon">👂</div>
+      <div class="label">OpenWakeWord</div>
+      <div class="desc">Detects "Hey Jarvis" locally (100% free)</div>
     </div>
     <div class="flow-arrow">→</div>
     <div class="flow-node">
@@ -630,17 +630,16 @@
     <div class="step">
       <div class="step-num"></div>
       <div class="step-content">
-        <h4>Get a Free Porcupine Access Key</h4>
-        <p>Go to <code>https://console.picovoice.ai/</code>, create a free account, and copy your Access Key. Then set it as an environment variable:</p>
-        <div class="code-block">setx PORCUPINE_ACCESS_KEY "your-key-here"</div>
+        <h4>No API Keys Needed for Wake Word!</h4>
+        <p>Jarvis uses <strong style="color:var(--accent3)">OpenWakeWord</strong> — a completely free, open-source wake word engine. No sign-ups, no keys, no trials. The only key you need is your OpenAI Whisper API key for speech-to-text (already configured in <code>config.json</code>).</p>
       </div>
     </div>
 
     <div class="step">
       <div class="step-num"></div>
       <div class="step-content">
-        <h4>Run Setup (Already Done!)</h4>
-        <p>Dependencies (pvporcupine, pyaudio, openai) are already installed. Your Whisper API key is configured. If you ever need to reinstall:</p>
+        <h4>Dependencies (Already Installed!)</h4>
+        <p>All Python packages (openwakeword, pyaudio, openai, numpy, onnxruntime) are already installed on your machine. If you ever need to reinstall:</p>
         <div class="code-block">cd Desktop\Jarvis
 setup.bat</div>
       </div>
@@ -666,7 +665,7 @@ python jarvis_core.py</div>
   </div>
 
   <div class="tip-box">
-    <strong>One-time only:</strong> The Porcupine Access Key (step 1) is the only manual step. Everything else is pre-configured. The key is free and takes 30 seconds to get.
+    <strong>Zero setup friction:</strong> Wake word detection is completely free via OpenWakeWord. On first launch, it auto-downloads a tiny ~5MB model. After that, everything works offline — no accounts, no keys, no limits.
   </div>
 </section>
 
@@ -754,7 +753,7 @@ python jarvis_manager.py</div>
     </div>
     <div class="arch-connector">↓</div>
     <div class="arch-layer">
-      <div class="arch-box engine">Porcupine Wake Word</div>
+      <div class="arch-box engine">OpenWakeWord (Free)</div>
     </div>
     <div class="arch-connector">↓ "Jarvis" detected</div>
     <div class="arch-layer">
@@ -822,14 +821,14 @@ python jarvis_manager.py</div>
     </div>
     <div class="cmd-card">
       <h4 style="color: var(--accent);">Sensitivity tuning</h4>
-      <div class="what-happens">If Jarvis triggers too easily (or not enough), adjust <code>porcupine_sensitivity</code> in config.json. Range is 0.0 to 1.0 — higher = more sensitive. Default 0.7 is a good balance.</div>
+      <div class="what-happens">If Jarvis triggers too easily (or not enough), adjust <code>oww_threshold</code> in config.json. Range is 0.0 to 1.0 — higher = harder to trigger. Default 0.5 is a good balance.</div>
     </div>
   </div>
 </section>
 
 <footer>
   JARVIS Voice Assistant — Built for Toby<br>
-  Porcupine (Picovoice) + OpenAI Whisper + cc.py Desktop Automation
+  OpenWakeWord (Free) + OpenAI Whisper + cc.py Desktop Automation
 </footer>
 
 <script>

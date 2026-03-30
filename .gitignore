@@ -4,6 +4,9 @@ config.json
 # Audio recordings
 audio/
 
+# Downloaded models
+models/
+
 # Logs
 logs/
 
